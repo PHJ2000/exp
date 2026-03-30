@@ -10,10 +10,13 @@ from tkinter import messagebox, ttk
 APP_NAME="Codex Dictation"; ROOT=Path(__file__).resolve().parent
 SETTINGS_PATH=ROOT/"codex_dictation.settings.json"; HISTORY_PATH=ROOT/"codex_dictation.history.jsonl"; LOG_PATH=ROOT/"codex_dictation.log"
 TERMINALS={"windowsterminal.exe","wezterm-gui.exe","conhost.exe","powershell.exe","pwsh.exe","cmd.exe","mintty.exe","alacritty.exe","rio.exe","code.exe","cursor.exe"}
+ENTER_COMMANDS={"엔터","전송","보내","보내줘","보내 줘"}
+UNDO_COMMANDS={"취소","지워","삭제","방금 지워","방금 지워줘","마지막 지워","마지막 지워줘"}
+CORRECTION_PREFIXES=("정정 ", "정정, ", "그게 아니라 ", "그게 아니라, ", "아 그게 아니라 ", "아 그게 아니라, ", "아니 ", "아니고 ")
 
 @dataclass
 class Settings:
-    input_device:str=""; sample_rate:int=16000; channels:int=1; whisper_model:str="small"; whisper_device:str="auto"; whisper_compute_type:str="auto"
+    input_device:str=""; sample_rate:int=16000; channels:int=1; whisper_model:str="large-v3-turbo"; whisper_device:str="auto"; whisper_compute_type:str="auto"
     language:str="ko"; initial_prompt:str=""; record_hotkey:str="f8"; always_listen_hotkey:str="f7"; paste_last_hotkey:str="f9"
     toggle_output_hotkey:str="f10"; toggle_enter_hotkey:str="f11"; output_mode:str="type"; paste_hotkey:str="ctrl+v"; auto_enter:bool=False
     trim_silence:bool=True; trim_threshold:float=0.008; normalize_whitespace:bool=True; max_record_seconds:int=45; min_record_seconds:float=0.25
@@ -210,14 +213,14 @@ class App:
         if not self.s.input_device: self.s.input_device = default_input_device_name()
         save_settings(self.s)
         self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
-        self.busy=False; self.last=""; self.last_target=None; self.t=None
+        self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.last_target=None; self.t=None
         self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","language","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
         self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status(); self.register_hotkeys(); self.sync_listener(); self.root.after(200,self.poll); self.root.after(250,self.poll_record); self.root.after(400,self.poll_target); self.log("Ready")
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
-        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
+        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 엔터, 취소, 정정 ...").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
         top=ttk.Frame(self.root,padding=(12,0,12,0)); top.grid(row=1,column=0,sticky="nsew"); top.columnconfigure((0,1),weight=1); left=ttk.LabelFrame(top,text="Recording",padding=12); right=ttk.LabelFrame(top,text="Output, Target, Hotkeys",padding=12); left.grid(row=0,column=0,sticky="nsew",padx=(0,6)); right.grid(row=0,column=1,sticky="nsew",padx=(6,0))
         self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],2); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],3); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],4); self._entry(left,"Language","language",5); self._entry(left,"Initial Prompt","initial_prompt",6); self._entry(left,"Max Record Seconds","max_record_seconds",7); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",8); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",9)
         self._check(left,"Trim leading and trailing silence","trim_silence",10); self._check(left,"Normalize whitespace","normalize_whitespace",11); self._check(left,"Enable manual mode auto stop","enable_auto_stop",12); self._check(left,"Play feedback beeps","beep_feedback",13); self._check(left,"Keep window on top","keep_window_on_top",14)
@@ -303,14 +306,67 @@ class App:
         try: audio,source=self.jobs.get_nowait()
         except queue.Empty: return
         self.queue_audio(audio,source)
-    def emit_text(self,text):
+    def _keyboard(self):
+        import keyboard
+        return keyboard
+    def _backspace_text(self,text)->bool:
+        if not text: return True
+        try: keyboard=self._keyboard()
+        except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return False
+        for _ in text: keyboard.press_and_release("backspace")
+        return True
+    def _update_latest_transcript(self,text):
+        self.last=text; self.txt.delete("1.0",tk.END); self.txt.insert("1.0",text); self.copy_clip(text)
+    def emit_text(self,text,remember=True,press_enter:bool|None=None):
         try: import keyboard
         except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return
         if self.s.output_mode=="clipboard": self.log("Copied transcript to clipboard"); return
         if self.s.output_mode=="type": keyboard.write(text,delay=0)
         else: time.sleep(0.05); keyboard.press_and_release(self.s.paste_hotkey)
-        if self.s.auto_enter: time.sleep(0.03); keyboard.press_and_release("enter")
+        sent_enter=self.s.auto_enter if press_enter is None else press_enter
+        if sent_enter: time.sleep(0.03); keyboard.press_and_release("enter")
+        if remember:
+            self.last_emitted=text
+            self.last_submitted=bool(sent_enter)
         self.log(f"Transcript sent via {self.s.output_mode}")
+    def send_enter(self)->bool:
+        try: keyboard=self._keyboard()
+        except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return False
+        keyboard.press_and_release("enter")
+        self.last_submitted=True
+        self.log("Voice command executed: enter")
+        return True
+    def undo_last_emitted(self)->bool:
+        if not self.last_emitted: self.log("Voice command ignored: no recent text to erase"); return False
+        if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
+        if not self._backspace_text(self.last_emitted): return False
+        self.log("Voice command executed: erase last emitted text")
+        self.last_emitted=""
+        return True
+    def replace_last_emitted(self,text:str)->bool:
+        if not self.last_emitted: self.log("Voice command ignored: no recent text to replace"); return False
+        if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
+        if not self._backspace_text(self.last_emitted): return False
+        self._update_latest_transcript(text); self.emit_text(text,remember=True,press_enter=False)
+        self.log("Voice command executed: replace last emitted text")
+        return True
+    def _command_key(self,text:str)->str:
+        return text.strip().strip(" \t\r\n.,!?;:\"'").lower()
+    def parse_correction(self,text:str)->str:
+        raw=text.strip()
+        lowered=raw.lower()
+        for prefix in CORRECTION_PREFIXES:
+            if lowered.startswith(prefix):
+                return raw[len(prefix):].strip(" \t\r\n.,!?;:\"'")
+        return ""
+    def handle_voice_command(self,text:str)->bool:
+        key=self._command_key(text)
+        if not key: return False
+        if key in ENTER_COMMANDS: return self.send_enter()
+        if key in UNDO_COMMANDS: return self.undo_last_emitted()
+        replacement=self.parse_correction(text)
+        if replacement: return self.replace_last_emitted(replacement)
+        return False
     def copy_clip(self,text): self.root.clipboard_clear(); self.root.clipboard_append(text); self.root.update()
     def paste_last(self):
         if not self.last: self.log("No transcript to paste yet"); return
@@ -333,7 +389,8 @@ class App:
                 elif kind=="done":
                     self.busy=False; self.refresh_status()
                     if not p["text"]: self.beep("error"); self.log(f"No speech detected from {p['source']}"); self._next(); continue
-                    self.last=p["text"]; self.txt.delete("1.0",tk.END); self.txt.insert("1.0",self.last); append_history(self.last,{"elapsed_seconds":round(float(p["elapsed"]),3),"audio_seconds":round(float(p["audio_seconds"]),3),"output_mode":self.s.output_mode,"source":p["source"]}); self.copy_clip(self.last); self.emit_text(self.last); self.beep("done"); self.log(f"Transcript ready from {p['source']} in {float(p['elapsed']):.2f}s for {float(p['audio_seconds']):.2f}s audio"); self._next()
+                    if self.handle_voice_command(p["text"]): self.beep("done"); self._next(); continue
+                    self._update_latest_transcript(p["text"]); append_history(self.last,{"elapsed_seconds":round(float(p["elapsed"]),3),"audio_seconds":round(float(p["audio_seconds"]),3),"output_mode":self.s.output_mode,"source":p["source"]}); self.emit_text(self.last); self.beep("done"); self.log(f"Transcript ready from {p['source']} in {float(p['elapsed']):.2f}s for {float(p['audio_seconds']):.2f}s audio"); self._next()
                 elif kind=="error": self.busy=False; self.refresh_status(); self.beep("error"); self.log("Transcription failed"); self.log(p); self._next()
         except queue.Empty: pass
         self.root.after(200,self.poll)
