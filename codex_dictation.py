@@ -235,7 +235,7 @@ class App:
         self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","language","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
-        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status(); self.register_hotkeys(); self.sync_listener(); self.root.after(200,self.poll); self.root.after(250,self.poll_record); self.root.after(400,self.poll_target); self.log("Ready")
+        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Warming up"); self.warmup_model(); self.register_hotkeys(); self.sync_listener(); self.root.after(200,self.poll); self.root.after(250,self.poll_record); self.root.after(400,self.poll_target); self.log("Ready")
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
         ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 엔터, 취소, 정정 ...").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
@@ -324,6 +324,24 @@ class App:
         try: audio,source=self.jobs.get_nowait()
         except queue.Empty: return
         self.queue_audio(audio,source)
+    def warmup_model(self):
+        t0=time.perf_counter(); path=None
+        try:
+            self.root.update_idletasks()
+            self.log(f"Model warmup started for {self.s.whisper_model}")
+            self.backend._model(self.s)
+            with tempfile.NamedTemporaryFile(suffix=".wav",delete=False) as h:
+                path=Path(h.name)
+            sf.write(path,np.zeros(max(int(self.s.sample_rate*0.35),1),dtype=np.float32),self.s.sample_rate)
+            self.backend.transcribe(path,self.s)
+            self.log(f"Model warmup finished in {time.perf_counter()-t0:.2f}s")
+        except Exception as e:
+            self.log(f"Model warmup skipped: {e}")
+        finally:
+            if path is not None:
+                try: path.unlink(missing_ok=True)
+                except Exception: pass
+            self.refresh_status()
     def _keyboard(self):
         import keyboard
         return keyboard
