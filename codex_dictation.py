@@ -10,9 +10,19 @@ from tkinter import messagebox, ttk
 APP_NAME="Codex Dictation"; ROOT=Path(__file__).resolve().parent
 SETTINGS_PATH=ROOT/"codex_dictation.settings.json"; HISTORY_PATH=ROOT/"codex_dictation.history.jsonl"; LOG_PATH=ROOT/"codex_dictation.log"
 TERMINALS={"windowsterminal.exe","wezterm-gui.exe","conhost.exe","powershell.exe","pwsh.exe","cmd.exe","mintty.exe","alacritty.exe","rio.exe","code.exe","cursor.exe"}
-ENTER_COMMANDS={"엔터","전송","보내","보내줘","보내 줘"}
-UNDO_COMMANDS={"취소","지워","삭제","방금 지워","방금 지워줘","마지막 지워","마지막 지워줘"}
+def _command_aliases(*values:str)->set[str]:
+    out=set()
+    for value in values:
+        cleaned="".join(ch for ch in value.strip().lower() if ch not in " \t\r\n.,!?;:\"'")
+        if cleaned: out.add(cleaned)
+    return out
+
+ENTER_COMMANDS=_command_aliases("엔터","전송","보내","보내줘","보내 줘")
+UNDO_LAST_COMMANDS=_command_aliases("취소","방금 지워","방금 지워줘","마지막 지워","마지막 지워줘","한번 지워","한 번 지워","직전 지워")
+CLEAR_ALL_COMMANDS=_command_aliases("전부 지워","전부 지워줘","다 지워","다 지워줘","전체 지워","전체 지워줘","모두 지워","모두 지워줘","싹 지워","싹 지워줘")
+DELETE_SOUND_ALIASES=_command_aliases("지워","지워줘","지워 줘","지어","지어줘","지어 줘","치워","치워줘","치워 줘","치어","치어줘","삭제","삭제해","삭제해줘")
 CORRECTION_PREFIXES=("정정 ", "정정, ", "그게 아니라 ", "그게 아니라, ", "아 그게 아니라 ", "아 그게 아니라, ", "아니 ", "아니고 ")
+COMMAND_PROMPT="엔터 전송 보내 취소 방금 지워 마지막 지워 전부 지워 다 지워 전체 지워 모두 지워 정정 그게 아니라 아니고"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
 
@@ -94,6 +104,9 @@ def trim_silence(audio:np.ndarray,th:float)->np.ndarray:
     a=max(int(voiced[0])-1600,0); b=min(int(voiced[-1])+1600,len(audio)); return audio[a:b]
 
 def normalize_text(text:str)->str: return " ".join(text.replace("\r"," ").replace("\n"," ").split()).strip()
+def initial_prompt_for_commands(settings:Settings)->str:
+    base=(settings.initial_prompt or "").strip()
+    return f"{base} {COMMAND_PROMPT}".strip() if base else COMMAND_PROMPT
 def pick_compute_type(v:str)->str:
     if v!="auto": return v
     try:
@@ -151,7 +164,7 @@ class WhisperBackend:
             if key not in self.cache: self.cache[key]=WhisperModel(s.whisper_model,device=device,compute_type=key[2])
             return self.cache[key]
     def transcribe(self,path:Path,s:Settings)->str:
-        segs,_=self._model(s).transcribe(path.as_posix(),language=(s.language or None),initial_prompt=(s.initial_prompt or None),vad_filter=True,beam_size=5)
+        segs,_=self._model(s).transcribe(path.as_posix(),language=(s.language or None),initial_prompt=initial_prompt_for_commands(s),vad_filter=True,beam_size=5)
         return " ".join(x.text.strip() for x in segs).strip()
 
 class Recorder:
@@ -231,7 +244,7 @@ class App:
         if not self.s.input_device: self.s.input_device = default_input_device_name()
         save_settings(self.s)
         self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
-        self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.last_target=None; self.t=None
+        self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.pending_text=""; self.last_target=None; self.t=None
         self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","language","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
@@ -364,30 +377,45 @@ class App:
         if remember:
             self.last_emitted=text
             self.last_submitted=bool(sent_enter)
+            self.pending_text="" if sent_enter else f"{self.pending_text}{text}"
         self.log(f"Transcript sent via {self.s.output_mode}")
     def send_enter(self)->bool:
         try: keyboard=self._keyboard()
         except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return False
         keyboard.press_and_release("enter")
         self.last_submitted=True
+        self.pending_text=""
         self.log("Voice command executed: enter")
         return True
     def undo_last_emitted(self)->bool:
         if not self.last_emitted: self.log("Voice command ignored: no recent text to erase"); return False
         if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
         if not self._backspace_text(self.last_emitted): return False
+        if self.pending_text.endswith(self.last_emitted): self.pending_text=self.pending_text[:-len(self.last_emitted)]
         self.log("Voice command executed: erase last emitted text")
+        self.last_emitted=""
+        return True
+    def clear_pending_input(self)->bool:
+        if not self.pending_text: self.log("Voice command ignored: no current text to clear"); return False
+        if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
+        try: keyboard=self._keyboard()
+        except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return False
+        keyboard.press_and_release("end")
+        if not self._backspace_text(self.pending_text): return False
+        self.log("Voice command executed: clear current input")
+        self.pending_text=""
         self.last_emitted=""
         return True
     def replace_last_emitted(self,text:str)->bool:
         if not self.last_emitted: self.log("Voice command ignored: no recent text to replace"); return False
         if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
         if not self._backspace_text(self.last_emitted): return False
+        if self.pending_text.endswith(self.last_emitted): self.pending_text=self.pending_text[:-len(self.last_emitted)]
         self._update_latest_transcript(text); self.emit_text(text,remember=True,press_enter=False)
         self.log("Voice command executed: replace last emitted text")
         return True
     def _command_key(self,text:str)->str:
-        return text.strip().strip(" \t\r\n.,!?;:\"'").lower()
+        return "".join(ch for ch in text.strip().lower() if ch not in " \t\r\n.,!?;:\"'")
     def parse_correction(self,text:str)->str:
         raw=text.strip()
         lowered=raw.lower()
@@ -399,7 +427,9 @@ class App:
         key=self._command_key(text)
         if not key: return False
         if key in ENTER_COMMANDS: return self.send_enter()
-        if key in UNDO_COMMANDS: return self.undo_last_emitted()
+        if key in UNDO_LAST_COMMANDS: return self.undo_last_emitted()
+        if key in CLEAR_ALL_COMMANDS: return self.clear_pending_input()
+        if key in DELETE_SOUND_ALIASES: return self.undo_last_emitted()
         replacement=self.parse_correction(text)
         if replacement: return self.replace_last_emitted(replacement)
         return False
