@@ -17,11 +17,11 @@ def _command_aliases(*values:str)->set[str]:
         if cleaned: out.add(cleaned)
     return out
 
-ENTER_COMMANDS=_command_aliases("보내")
-CLEAR_ALL_COMMANDS=_command_aliases("다 지워")
-DELETE_SOUND_ALIASES=_command_aliases("지워","지어","치워")
-CORRECTION_PREFIXES=("다시 ", "다시, ")
-COMMAND_PROMPT="보내 지워 지어 치워 다 지워 다시"
+ENTER_COMMANDS=_command_aliases("보내","보내요","보네","보네요","보내줘","보내 줘","보내줘요","보내 줘요")
+CLEAR_ALL_COMMANDS=_command_aliases("다 지워","다 지어","다 치워","다 지워줘","다 치워줘","전부 지워","전부 지어","전부 치워","전체 지워","전체 지어","전체 치워","모두 지워","모두 지어","모두 치워","싹 지워","싹 지어","몽땅 지워")
+DELETE_SOUND_ALIASES=_command_aliases("지워","지어","치워","지워요","지어요","치워요","지워줘","지어줘","치워줘","지워줘요","치워줘요","지우","치우")
+CORRECTION_PREFIXES=("다시 말해줘 ", "다시말해줘 ", "다시 말해 ", "다시말해 ", "다시 해 ", "다시해 ", "다시 ", "다시, ")
+COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 다시 다시 말해 다시 말해줘"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
 
@@ -247,7 +247,7 @@ class App:
         self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","language","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
-        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Warming up"); self.warmup_model(); self.register_hotkeys(); self.sync_listener(); self.root.after(200,self.poll); self.root.after(250,self.poll_record); self.root.after(400,self.poll_target); self.root.after(800,self.minimize_after_startup); self.log("Ready")
+        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self.root.after(50,self.bootstrap_after_launch); self.root.after(200,self.poll); self.root.after(250,self.poll_record); self.root.after(400,self.poll_target)
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
         ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 다시 ...").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
@@ -268,6 +268,13 @@ class App:
         self.log_q.put(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     def refresh_status(self,activity="Idle"): self.status.set(f"{activity} | {self.s.output_mode.upper()}{' + ENTER' if self.s.auto_enter else ''}{' | ALWAYS-ON' if self.listen.on else ''}")
     def refresh_target(self): self.target.set("Target: focused terminal window")
+    def bootstrap_after_launch(self):
+        self.minimize_after_startup()
+        self.refresh_status("Warming up")
+        self.warmup_model()
+        self.register_hotkeys()
+        self.sync_listener()
+        self.log("Ready")
     def minimize_after_startup(self):
         if self.startup_minimized: return
         self.startup_minimized=True
@@ -393,7 +400,7 @@ class App:
         keyboard.press_and_release("enter")
         self.last_submitted=True
         self.pending_text=""
-        self.log("Voice command executed: enter")
+        self.log("Voice command executed: submit")
         return True
     def undo_last_emitted(self)->bool:
         if not self.last_emitted: self.log("Voice command ignored: no recent text to erase"); return False
