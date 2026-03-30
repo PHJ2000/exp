@@ -21,6 +21,21 @@ terminalWindowSpecs := [
     "ahk_exe Cursor.exe"
 ]
 
+IsTerminalWindow(hwnd)
+{
+    global terminalWindowSpecs
+
+    for spec in terminalWindowSpecs
+    {
+        for candidate in WinGetList(spec)
+        {
+            if candidate = hwnd
+                return true
+        }
+    }
+    return false
+}
+
 IsDictationProcessRunning()
 {
     global dictationScript
@@ -38,40 +53,17 @@ IsDictationProcessRunning()
 
 BringTerminalToFront()
 {
-    global terminalWindowSpecs
-
-    bestCodex := 0
-    fallback := 0
-
-    for spec in terminalWindowSpecs
+    for hwnd in WinGetList()
     {
-        for hwnd in WinGetList(spec)
-        {
-            title := ""
-            try title := WinGetTitle("ahk_id " hwnd)
+        if !IsTerminalWindow(hwnd)
+            continue
 
-            if !fallback
-                fallback := hwnd
-
-            if InStr(StrLower(title), "codex")
-            {
-                bestCodex := hwnd
-                break
-            }
-        }
-
-        if bestCodex
-            break
+        try WinRestore("ahk_id " hwnd)
+        try WinShow("ahk_id " hwnd)
+        try WinActivate("ahk_id " hwnd)
+        return true
     }
-
-    targetHwnd := bestCodex ? bestCodex : fallback
-    if !targetHwnd
-        return false
-
-    try WinRestore("ahk_id " targetHwnd)
-    try WinShow("ahk_id " targetHwnd)
-    try WinActivate("ahk_id " targetHwnd)
-    return true
+    return false
 }
 
 StartOrMinimizeDictation()

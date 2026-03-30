@@ -191,7 +191,6 @@ def focus_best_terminal()->bool:
     wins=list_terminal_windows()
     if not wins:
         return False
-    wins.sort(key=lambda info: (0 if is_codex_terminal(info) else 1, 0 if "codex" in (info.title or "").lower() else 1, info.hwnd))
     target=wins[0]
     try:
         user32.ShowWindow(target.hwnd, 9)
