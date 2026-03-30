@@ -17,12 +17,11 @@ def _command_aliases(*values:str)->set[str]:
         if cleaned: out.add(cleaned)
     return out
 
-ENTER_COMMANDS=_command_aliases("보내","보내줘","보내 줘","완료","완료해줘","완료 해줘")
-UNDO_LAST_COMMANDS=_command_aliases("취소","방금 지워","방금 지워줘","마지막 지워","마지막 지워줘","한번 지워","한 번 지워","직전 지워")
-CLEAR_ALL_COMMANDS=_command_aliases("전부 지워","전부 지워줘","다 지워","다 지워줘","전체 지워","전체 지워줘","모두 지워","모두 지워줘","싹 지워","싹 지워줘")
-DELETE_SOUND_ALIASES=_command_aliases("지워","지워줘","지워 줘","지어","지어줘","지어 줘","치워","치워줘","치워 줘","치어","치어줘","삭제","삭제해","삭제해줘")
+ENTER_COMMANDS=_command_aliases("보내")
+CLEAR_ALL_COMMANDS=_command_aliases("다 지워")
+DELETE_SOUND_ALIASES=_command_aliases("지워","지어","치워")
 CORRECTION_PREFIXES=("다시 ", "다시, ")
-COMMAND_PROMPT="보내 완료 취소 방금 지워 마지막 지워 전부 지워 다 지워 전체 지워 모두 지워 다시"
+COMMAND_PROMPT="보내 지워 지어 치워 다 지워 다시"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
 
@@ -244,14 +243,14 @@ class App:
         if not self.s.input_device: self.s.input_device = default_input_device_name()
         save_settings(self.s)
         self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
-        self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.pending_text=""; self.last_target=None; self.t=None
+        self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.pending_text=""; self.last_target=None; self.t=None; self.startup_minimized=False
         self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","language","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
-        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Warming up"); self.warmup_model(); self.register_hotkeys(); self.sync_listener(); self.root.after(200,self.poll); self.root.after(250,self.poll_record); self.root.after(400,self.poll_target); self.log("Ready")
+        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Warming up"); self.warmup_model(); self.register_hotkeys(); self.sync_listener(); self.root.after(200,self.poll); self.root.after(250,self.poll_record); self.root.after(400,self.poll_target); self.root.after(800,self.minimize_after_startup); self.log("Ready")
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
-        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 엔터, 취소, 정정 ...").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
+        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 다시 ...").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
         top=ttk.Frame(self.root,padding=(12,0,12,0)); top.grid(row=1,column=0,sticky="nsew"); top.columnconfigure((0,1),weight=1); left=ttk.LabelFrame(top,text="Recording",padding=12); right=ttk.LabelFrame(top,text="Output, Target, Hotkeys",padding=12); left.grid(row=0,column=0,sticky="nsew",padx=(0,6)); right.grid(row=0,column=1,sticky="nsew",padx=(6,0))
         self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],2); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],3); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],4); self._entry(left,"Language","language",5); self._entry(left,"Initial Prompt","initial_prompt",6); self._entry(left,"Max Record Seconds","max_record_seconds",7); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",8); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",9)
         self._check(left,"Trim leading and trailing silence","trim_silence",10); self._check(left,"Normalize whitespace","normalize_whitespace",11); self._check(left,"Enable manual mode auto stop","enable_auto_stop",12); self._check(left,"Play feedback beeps","beep_feedback",13); self._check(left,"Keep window on top","keep_window_on_top",14)
@@ -269,6 +268,14 @@ class App:
         self.log_q.put(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     def refresh_status(self,activity="Idle"): self.status.set(f"{activity} | {self.s.output_mode.upper()}{' + ENTER' if self.s.auto_enter else ''}{' | ALWAYS-ON' if self.listen.on else ''}")
     def refresh_target(self): self.target.set("Target: focused terminal window")
+    def minimize_after_startup(self):
+        if self.startup_minimized: return
+        self.startup_minimized=True
+        try:
+            self.root.iconify()
+            self.log("Window minimized after startup")
+        except Exception as e:
+            self.log(f"Startup minimize skipped: {e}")
     def save_from_ui(self):
         for k,v in self.vars.items():
             cur=getattr(self.s,k); raw=v.get().strip()
@@ -366,18 +373,19 @@ class App:
         return True
     def _update_latest_transcript(self,text):
         self.last=text; self.txt.delete("1.0",tk.END); self.txt.insert("1.0",text); self.copy_clip(text)
-    def emit_text(self,text,remember=True,press_enter:bool|None=None):
+    def emit_text(self,text,remember=True,press_enter:bool|None=None,append_space=True):
         try: import keyboard
         except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return
-        if self.s.output_mode=="clipboard": self.log("Copied transcript to clipboard"); return
-        if self.s.output_mode=="type": keyboard.write(text,delay=0)
-        else: time.sleep(0.05); keyboard.press_and_release(self.s.paste_hotkey)
         sent_enter=self.s.auto_enter if press_enter is None else press_enter
+        payload=f"{text} " if text and append_space and not sent_enter else text
+        if self.s.output_mode=="clipboard": self.log("Copied transcript to clipboard"); return
+        if self.s.output_mode=="type": keyboard.write(payload,delay=0)
+        else: time.sleep(0.05); keyboard.press_and_release(self.s.paste_hotkey)
         if sent_enter: time.sleep(0.03); keyboard.press_and_release("enter")
         if remember:
-            self.last_emitted=text
+            self.last_emitted=payload
             self.last_submitted=bool(sent_enter)
-            self.pending_text="" if sent_enter else f"{self.pending_text}{text}"
+            self.pending_text="" if sent_enter else f"{self.pending_text}{payload}"
         self.log(f"Transcript sent via {self.s.output_mode}")
     def send_enter(self)->bool:
         try: keyboard=self._keyboard()
@@ -411,7 +419,7 @@ class App:
         if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
         if not self._backspace_text(self.last_emitted): return False
         if self.pending_text.endswith(self.last_emitted): self.pending_text=self.pending_text[:-len(self.last_emitted)]
-        self._update_latest_transcript(text); self.emit_text(text,remember=True,press_enter=False)
+        self._update_latest_transcript(text); self.emit_text(text,remember=True,press_enter=False,append_space=True)
         self.log("Voice command executed: replace last emitted text")
         return True
     def _command_key(self,text:str)->str:
@@ -427,7 +435,6 @@ class App:
         key=self._command_key(text)
         if not key: return False
         if key in ENTER_COMMANDS: return self.send_enter()
-        if key in UNDO_LAST_COMMANDS: return self.undo_last_emitted()
         if key in CLEAR_ALL_COMMANDS: return self.clear_pending_input()
         if key in DELETE_SOUND_ALIASES: return self.undo_last_emitted()
         replacement=self.parse_correction(text)
