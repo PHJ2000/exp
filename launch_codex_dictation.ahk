@@ -58,8 +58,11 @@ BringTerminalToFront()
         if !IsTerminalWindow(hwnd)
             continue
 
-        try WinRestore("ahk_id " hwnd)
         try WinShow("ahk_id " hwnd)
+        state := 0
+        try state := WinGetMinMax("ahk_id " hwnd)
+        if (state = -1)
+            try WinRestore("ahk_id " hwnd)
         try WinActivate("ahk_id " hwnd)
         return true
     }

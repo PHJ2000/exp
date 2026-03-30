@@ -193,7 +193,8 @@ def focus_best_terminal()->bool:
         return False
     target=wins[0]
     try:
-        user32.ShowWindow(target.hwnd, 9)
+        if user32.IsIconic(target.hwnd):
+            user32.ShowWindow(target.hwnd, 9)
         user32.SetForegroundWindow(target.hwnd)
         return True
     except Exception:
