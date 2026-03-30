@@ -8,6 +8,66 @@ SetTitleMatchMode 2
 projectDir := A_ScriptDir
 dictationTitle := "Codex Dictation"
 dictationLauncher := projectDir "\run_codex_dictation.bat"
+dictationScript := projectDir "\codex_dictation.py"
+terminalWindowSpecs := [
+    "ahk_exe WindowsTerminal.exe",
+    "ahk_class CASCADIA_HOSTING_WINDOW_CLASS",
+    "ahk_class ConsoleWindowClass",
+    "ahk_exe wezterm-gui.exe",
+    "ahk_exe pwsh.exe",
+    "ahk_exe powershell.exe",
+    "ahk_exe cmd.exe",
+    "ahk_exe Code.exe",
+    "ahk_exe Cursor.exe"
+]
+
+IsTerminalWindow(hwnd)
+{
+    global terminalWindowSpecs
+
+    for spec in terminalWindowSpecs
+    {
+        for candidate in WinGetList(spec)
+        {
+            if candidate = hwnd
+                return true
+        }
+    }
+    return false
+}
+
+IsDictationProcessRunning()
+{
+    global dictationScript
+    escapedScript := StrReplace(dictationScript, "\", "\\")
+    query := "Select ProcessId from Win32_Process where Name='pythonw.exe' or Name='python.exe'"
+    for proc in ComObjGet("winmgmts:").ExecQuery(query)
+    {
+        cmd := ""
+        try cmd := proc.CommandLine
+        if InStr(StrLower(cmd), StrLower(escapedScript)) || InStr(StrLower(cmd), StrLower(dictationScript))
+            return true
+    }
+    return false
+}
+
+BringTerminalToFront()
+{
+    for hwnd in WinGetList()
+    {
+        if !IsTerminalWindow(hwnd)
+            continue
+
+        try WinShow("ahk_id " hwnd)
+        state := 0
+        try state := WinGetMinMax("ahk_id " hwnd)
+        if (state = -1)
+            try WinRestore("ahk_id " hwnd)
+        try WinActivate("ahk_id " hwnd)
+        return true
+    }
+    return false
+}
 
 StartOrMinimizeDictation()
 {
@@ -16,6 +76,13 @@ StartOrMinimizeDictation()
     if WinExist(dictationTitle)
     {
         WinMinimize dictationTitle
+        BringTerminalToFront()
+        return
+    }
+
+    if IsDictationProcessRunning()
+    {
+        BringTerminalToFront()
         return
     }
 
@@ -31,12 +98,14 @@ StartOrMinimizeDictation()
         Sleep 800
         WinMinimize dictationTitle
     }
+    Sleep 150
+    BringTerminalToFront()
 }
 
 EnsureDictationRunning()
 {
     global dictationTitle
-    if !WinExist(dictationTitle)
+    if !WinExist(dictationTitle) && !IsDictationProcessRunning()
         StartOrMinimizeDictation()
 }
 

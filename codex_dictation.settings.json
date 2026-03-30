@@ -2,7 +2,7 @@
   "input_device": "\ub9c8\uc774\ud06c(3- USB Audio Device)",
   "sample_rate": 16000,
   "channels": 1,
-  "whisper_model": "small",
+  "whisper_model": "large-v3-turbo",
   "whisper_device": "auto",
   "whisper_compute_type": "auto",
   "language": "ko",
@@ -23,7 +23,7 @@
   "beep_feedback": false,
   "keep_window_on_top": false,
   "enable_auto_stop": false,
-  "auto_stop_silence_seconds": 0.9,
+  "auto_stop_silence_seconds": 0.65,
   "always_listen_enabled": true,
-  "always_listen_preroll_seconds": 0.35
+  "always_listen_preroll_seconds": 0.25
 }
