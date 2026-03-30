@@ -9,6 +9,17 @@ projectDir := A_ScriptDir
 dictationTitle := "Codex Dictation"
 dictationLauncher := projectDir "\run_codex_dictation.bat"
 dictationScript := projectDir "\codex_dictation.py"
+terminalWindowSpecs := [
+    "ahk_exe WindowsTerminal.exe",
+    "ahk_class CASCADIA_HOSTING_WINDOW_CLASS",
+    "ahk_class ConsoleWindowClass",
+    "ahk_exe wezterm-gui.exe",
+    "ahk_exe pwsh.exe",
+    "ahk_exe powershell.exe",
+    "ahk_exe cmd.exe",
+    "ahk_exe Code.exe",
+    "ahk_exe Cursor.exe"
+]
 
 IsDictationProcessRunning()
 {
@@ -25,6 +36,44 @@ IsDictationProcessRunning()
     return false
 }
 
+BringTerminalToFront()
+{
+    global terminalWindowSpecs
+
+    bestCodex := 0
+    fallback := 0
+
+    for spec in terminalWindowSpecs
+    {
+        for hwnd in WinGetList(spec)
+        {
+            title := ""
+            try title := WinGetTitle("ahk_id " hwnd)
+
+            if !fallback
+                fallback := hwnd
+
+            if InStr(StrLower(title), "codex")
+            {
+                bestCodex := hwnd
+                break
+            }
+        }
+
+        if bestCodex
+            break
+    }
+
+    targetHwnd := bestCodex ? bestCodex : fallback
+    if !targetHwnd
+        return false
+
+    try WinRestore("ahk_id " targetHwnd)
+    try WinShow("ahk_id " targetHwnd)
+    try WinActivate("ahk_id " targetHwnd)
+    return true
+}
+
 StartOrMinimizeDictation()
 {
     global dictationTitle, dictationLauncher, projectDir
@@ -32,11 +81,15 @@ StartOrMinimizeDictation()
     if WinExist(dictationTitle)
     {
         WinMinimize dictationTitle
+        BringTerminalToFront()
         return
     }
 
     if IsDictationProcessRunning()
+    {
+        BringTerminalToFront()
         return
+    }
 
     if !FileExist(dictationLauncher)
     {
@@ -50,6 +103,8 @@ StartOrMinimizeDictation()
         Sleep 800
         WinMinimize dictationTitle
     }
+    Sleep 150
+    BringTerminalToFront()
 }
 
 EnsureDictationRunning()
