@@ -23,7 +23,7 @@
   "beep_feedback": false,
   "keep_window_on_top": false,
   "enable_auto_stop": false,
-  "auto_stop_silence_seconds": 0.9,
+  "auto_stop_silence_seconds": 0.65,
   "always_listen_enabled": true,
-  "always_listen_preroll_seconds": 0.35
+  "always_listen_preroll_seconds": 0.25
 }

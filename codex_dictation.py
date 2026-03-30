@@ -24,6 +24,18 @@ CORRECTION_PREFIXES=("다시 말해줘 ", "다시말해줘 ", "다시 말해 ", 
 COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 다시 다시 말해 다시 말해줘"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
+DELETE_COUNT_WORDS={
+    "한":1,"하나":1,"한번":1,"한 번":1,
+    "두":2,"둘":2,"두번":2,"두 번":2,
+    "세":3,"셋":3,"세번":3,"세 번":3,
+    "네":4,"넷":4,"네번":4,"네 번":4,
+    "다섯":5,
+    "여섯":6,
+    "일곱":7,
+    "여덟":8,
+    "아홉":9,
+    "열":10
+}
 
 @dataclass
 class Settings:
@@ -31,8 +43,8 @@ class Settings:
     language:str="ko"; initial_prompt:str=""; record_hotkey:str="f8"; always_listen_hotkey:str="f7"; paste_last_hotkey:str="f9"
     toggle_output_hotkey:str="f10"; toggle_enter_hotkey:str="f11"; output_mode:str="type"; paste_hotkey:str="ctrl+v"; auto_enter:bool=False
     trim_silence:bool=True; trim_threshold:float=0.008; normalize_whitespace:bool=True; max_record_seconds:int=45; min_record_seconds:float=0.25
-    beep_feedback:bool=False; keep_window_on_top:bool=False; enable_auto_stop:bool=False; auto_stop_silence_seconds:float=0.9
-    always_listen_enabled:bool=True; always_listen_preroll_seconds:float=0.35
+    beep_feedback:bool=False; keep_window_on_top:bool=False; enable_auto_stop:bool=False; auto_stop_silence_seconds:float=0.65
+    always_listen_enabled:bool=True; always_listen_preroll_seconds:float=0.25
 
 @dataclass
 class WinInfo:
@@ -148,6 +160,46 @@ def is_codex_terminal(info:WinInfo|None)->bool:
 def is_target_terminal(info:WinInfo|None)->bool:
     return bool(info and (is_codex_terminal(info) or is_terminal(info)))
 
+def list_terminal_windows()->list[WinInfo]:
+    user32=ctypes.windll.user32
+    windows=[]
+    enum_proc=ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def _cb(hwnd, lparam):
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            n=user32.GetWindowTextLengthW(hwnd)
+            if n<=0:
+                return True
+            title=ctypes.create_unicode_buffer(n+1)
+            user32.GetWindowTextW(hwnd,title,n+1)
+            cls=ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd,cls,256)
+            pid=ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(hwnd,ctypes.byref(pid))
+            info=WinInfo(int(hwnd),int(pid.value),title.value,cls.value,safe_proc(int(pid.value)))
+            if is_terminal(info):
+                windows.append(info)
+        except Exception:
+            pass
+        return True
+    user32.EnumWindows(enum_proc(_cb), 0)
+    return windows
+
+def focus_best_terminal()->bool:
+    user32=ctypes.windll.user32
+    wins=list_terminal_windows()
+    if not wins:
+        return False
+    wins.sort(key=lambda info: (0 if is_codex_terminal(info) else 1, 0 if "codex" in (info.title or "").lower() else 1, info.hwnd))
+    target=wins[0]
+    try:
+        user32.ShowWindow(target.hwnd, 9)
+        user32.SetForegroundWindow(target.hwnd)
+        return True
+    except Exception:
+        return False
+
 class WhisperBackend:
     def __init__(self): self.cache={}; self.lock=threading.Lock()
     def _model(self,s:Settings):
@@ -163,7 +215,7 @@ class WhisperBackend:
             if key not in self.cache: self.cache[key]=WhisperModel(s.whisper_model,device=device,compute_type=key[2])
             return self.cache[key]
     def transcribe(self,path:Path,s:Settings)->str:
-        segs,_=self._model(s).transcribe(path.as_posix(),language=(s.language or None),initial_prompt=initial_prompt_for_commands(s),vad_filter=True,beam_size=5)
+        segs,_=self._model(s).transcribe(path.as_posix(),language=(s.language or None),initial_prompt=initial_prompt_for_commands(s),vad_filter=True,beam_size=1,best_of=1,condition_on_previous_text=False)
         return " ".join(x.text.strip() for x in segs).strip()
 
 class Recorder:
@@ -189,7 +241,7 @@ class AlwaysListen:
     def __init__(self,s:Settings,log,on_audio,target_active): self.s=s; self.log=log; self.on_audio=on_audio; self.target_active=target_active; self.stream=None; self.on=False; self.lock=threading.Lock(); self.pre=deque(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0
     def start(self):
         if self.on: return
-        self.reset(); self.stream=sd.InputStream(samplerate=self.s.sample_rate,channels=self.s.channels,dtype="float32",device=resolve_input_device(self.s.input_device),blocksize=max(int(self.s.sample_rate*0.1),512),callback=self._cb); self.stream.start(); self.on=True; self.log("Always-listen started")
+        self.reset(); self.stream=sd.InputStream(samplerate=self.s.sample_rate,channels=self.s.channels,dtype="float32",device=resolve_input_device(self.s.input_device),blocksize=max(int(self.s.sample_rate*0.06),512),callback=self._cb); self.stream.start(); self.on=True; self.log("Always-listen started")
     def stop(self):
         if not self.on: return
         self.stream.stop(); self.stream.close(); self.stream=None; self.on=False; self.reset(); self.log("Always-listen stopped")
@@ -243,11 +295,11 @@ class App:
         if not self.s.input_device: self.s.input_device = default_input_device_name()
         save_settings(self.s)
         self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
-        self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.pending_text=""; self.last_target=None; self.t=None; self.startup_minimized=False
+        self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.pending_text=""; self.pending_segments=[]; self.last_target=None; self.t=None; self.startup_minimized=False
         self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","language","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
-        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self.root.after(50,self.bootstrap_after_launch); self.root.after(200,self.poll); self.root.after(250,self.poll_record); self.root.after(400,self.poll_target)
+        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self.root.after(50,self.bootstrap_after_launch); self.root.after(80,self.poll); self.root.after(120,self.poll_record); self.root.after(150,self.poll_target)
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
         ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 다시 ...").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
@@ -270,6 +322,7 @@ class App:
     def refresh_target(self): self.target.set("Target: focused terminal window")
     def bootstrap_after_launch(self):
         self.minimize_after_startup()
+        self.focus_terminal_after_startup()
         self.refresh_status("Warming up")
         self.warmup_model()
         self.register_hotkeys()
@@ -283,6 +336,14 @@ class App:
             self.log("Window minimized after startup")
         except Exception as e:
             self.log(f"Startup minimize skipped: {e}")
+    def focus_terminal_after_startup(self):
+        try:
+            if self.target_active():
+                return
+            if focus_best_terminal():
+                self.log("Focused terminal after startup")
+        except Exception as e:
+            self.log(f"Startup terminal focus skipped: {e}")
     def save_from_ui(self):
         for k,v in self.vars.items():
             cur=getattr(self.s,k); raw=v.get().strip()
@@ -392,7 +453,12 @@ class App:
         if remember:
             self.last_emitted=payload
             self.last_submitted=bool(sent_enter)
-            self.pending_text="" if sent_enter else f"{self.pending_text}{payload}"
+            if sent_enter:
+                self.pending_text=""
+                self.pending_segments=[]
+            else:
+                self.pending_text=f"{self.pending_text}{payload}"
+                self.pending_segments.append(payload)
         self.log(f"Transcript sent via {self.s.output_mode}")
     def send_enter(self)->bool:
         try: keyboard=self._keyboard()
@@ -400,15 +466,20 @@ class App:
         keyboard.press_and_release("enter")
         self.last_submitted=True
         self.pending_text=""
+        self.pending_segments=[]
         self.log("Voice command executed: submit")
         return True
-    def undo_last_emitted(self)->bool:
-        if not self.last_emitted: self.log("Voice command ignored: no recent text to erase"); return False
+    def undo_last_emitted(self,count:int=1)->bool:
+        if count<=0: return False
+        if not self.pending_segments: self.log("Voice command ignored: no recent text to erase"); return False
         if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
-        if not self._backspace_text(self.last_emitted): return False
-        if self.pending_text.endswith(self.last_emitted): self.pending_text=self.pending_text[:-len(self.last_emitted)]
-        self.log("Voice command executed: erase last emitted text")
-        self.last_emitted=""
+        if count>len(self.pending_segments): count=len(self.pending_segments)
+        removed="".join(self.pending_segments[-count:])
+        if not self._backspace_text(removed): return False
+        self.pending_segments=self.pending_segments[:-count]
+        if self.pending_text.endswith(removed): self.pending_text=self.pending_text[:-len(removed)]
+        self.last_emitted=self.pending_segments[-1] if self.pending_segments else ""
+        self.log(f"Voice command executed: erase last {count} segment(s)")
         return True
     def clear_pending_input(self)->bool:
         if not self.pending_text: self.log("Voice command ignored: no current text to clear"); return False
@@ -419,13 +490,16 @@ class App:
         if not self._backspace_text(self.pending_text): return False
         self.log("Voice command executed: clear current input")
         self.pending_text=""
+        self.pending_segments=[]
         self.last_emitted=""
         return True
     def replace_last_emitted(self,text:str)->bool:
-        if not self.last_emitted: self.log("Voice command ignored: no recent text to replace"); return False
+        if not self.pending_segments: self.log("Voice command ignored: no recent text to replace"); return False
         if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
-        if not self._backspace_text(self.last_emitted): return False
-        if self.pending_text.endswith(self.last_emitted): self.pending_text=self.pending_text[:-len(self.last_emitted)]
+        last_segment=self.pending_segments[-1]
+        if not self._backspace_text(last_segment): return False
+        self.pending_segments=self.pending_segments[:-1]
+        if self.pending_text.endswith(last_segment): self.pending_text=self.pending_text[:-len(last_segment)]
         self._update_latest_transcript(text); self.emit_text(text,remember=True,press_enter=False,append_space=True)
         self.log("Voice command executed: replace last emitted text")
         return True
@@ -438,12 +512,31 @@ class App:
             if lowered.startswith(prefix):
                 return raw[len(prefix):].strip(" \t\r\n.,!?;:\"'")
         return ""
+    def parse_delete_count(self,text:str)->int:
+        raw=text.strip().lower()
+        compact=self._command_key(text)
+        if compact in DELETE_SOUND_ALIASES:
+            return 1
+        for suffix in ("번지워","번지어","번치워","개지워","개지어","개치워"):
+            if compact.endswith(suffix):
+                count_text=compact[:-len(suffix)]
+                if count_text.isdigit():
+                    return max(1,int(count_text))
+        for key,value in DELETE_COUNT_WORDS.items():
+            for suffix in (" 번 지워"," 번 지어"," 번 치워","개 지워","개 지어","개 치워","번만 지워","번만 지어","번만 치워"):
+                if raw==f"{key}{suffix}":
+                    return value
+            for suffix in ("번지워","번지어","번치워","개지워","개지어","개치워","번만지워","번만지어","번만치워"):
+                if compact==f"{key}{suffix}":
+                    return value
+        return 0
     def handle_voice_command(self,text:str)->bool:
         key=self._command_key(text)
         if not key: return False
         if key in ENTER_COMMANDS: return self.send_enter()
         if key in CLEAR_ALL_COMMANDS: return self.clear_pending_input()
-        if key in DELETE_SOUND_ALIASES: return self.undo_last_emitted()
+        delete_count=self.parse_delete_count(text)
+        if delete_count: return self.undo_last_emitted(delete_count)
         replacement=self.parse_correction(text)
         if replacement: return self.replace_last_emitted(replacement)
         return False
@@ -473,17 +566,17 @@ class App:
                     self._update_latest_transcript(p["text"]); append_history(self.last,{"elapsed_seconds":round(float(p["elapsed"]),3),"audio_seconds":round(float(p["audio_seconds"]),3),"output_mode":self.s.output_mode,"source":p["source"]}); self.emit_text(self.last); self.beep("done"); self.log(f"Transcript ready from {p['source']} in {float(p['elapsed']):.2f}s for {float(p['audio_seconds']):.2f}s audio"); self._next()
                 elif kind=="error": self.busy=False; self.refresh_status(); self.beep("error"); self.log("Transcription failed"); self.log(p); self._next()
         except queue.Empty: pass
-        self.root.after(200,self.poll)
+        self.root.after(80,self.poll)
     def poll_record(self):
         if self.rec.on:
             d=self.rec.duration(); self.refresh_status(f"Recording {d:.1f}s")
             if d>=self.s.max_record_seconds: self.log("Max recording length reached"); self.stop_recording()
             elif self.rec.should_stop(): self.log("Silence timeout reached"); self.stop_recording()
-        self.root.after(250,self.poll_record)
+        self.root.after(120,self.poll_record)
     def poll_target(self):
         active=self.target_active()
         if active!=self.last_target: self.last_target=active; self.log("Target window active" if active else "Target window inactive")
-        self.root.after(400,self.poll_target)
+        self.root.after(150,self.poll_target)
     def close(self):
         if self.rec.on:
             try: self.rec.stop()
