@@ -13,6 +13,8 @@ TERMINALS={"windowsterminal.exe","wezterm-gui.exe","conhost.exe","powershell.exe
 ENTER_COMMANDS={"엔터","전송","보내","보내줘","보내 줘"}
 UNDO_COMMANDS={"취소","지워","삭제","방금 지워","방금 지워줘","마지막 지워","마지막 지워줘"}
 CORRECTION_PREFIXES=("정정 ", "정정, ", "그게 아니라 ", "그게 아니라, ", "아 그게 아니라 ", "아 그게 아니라, ", "아니 ", "아니고 ")
+SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
+_single_instance_handle=None
 
 @dataclass
 class Settings:
@@ -60,6 +62,22 @@ def default_input_device_name():
         pass
     devs = get_input_devices()
     return devs[0]["name"] if devs else ""
+
+def acquire_single_instance()->bool:
+    global _single_instance_handle
+    try:
+        kernel32=ctypes.windll.kernel32
+        kernel32.SetLastError(0)
+        handle=kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX_NAME)
+        if not handle:
+            return True
+        if kernel32.GetLastError()==183:
+            kernel32.CloseHandle(handle)
+            return False
+        _single_instance_handle=handle
+        return True
+    except Exception:
+        return True
 
 def resolve_input_device(v):
     if v in (None,""): return None
@@ -423,6 +441,9 @@ def main():
     if a.language is not None: s.language=a.language
     if a.doctor: print(doctor(s)); return
     if a.transcribe_file: print(transcribe_file(a.transcribe_file,s)); return
+    if not acquire_single_instance():
+        append_app_log("Another instance is already running; exiting duplicate launch")
+        return
     root=tk.Tk(); style=ttk.Style()
     try: style.theme_use("vista")
     except Exception: pass

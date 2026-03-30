@@ -8,6 +8,22 @@ SetTitleMatchMode 2
 projectDir := A_ScriptDir
 dictationTitle := "Codex Dictation"
 dictationLauncher := projectDir "\run_codex_dictation.bat"
+dictationScript := projectDir "\codex_dictation.py"
+
+IsDictationProcessRunning()
+{
+    global dictationScript
+    escapedScript := StrReplace(dictationScript, "\", "\\")
+    query := "Select ProcessId from Win32_Process where Name='pythonw.exe' or Name='python.exe'"
+    for proc in ComObjGet("winmgmts:").ExecQuery(query)
+    {
+        cmd := ""
+        try cmd := proc.CommandLine
+        if InStr(StrLower(cmd), StrLower(escapedScript)) || InStr(StrLower(cmd), StrLower(dictationScript))
+            return true
+    }
+    return false
+}
 
 StartOrMinimizeDictation()
 {
@@ -18,6 +34,9 @@ StartOrMinimizeDictation()
         WinMinimize dictationTitle
         return
     }
+
+    if IsDictationProcessRunning()
+        return
 
     if !FileExist(dictationLauncher)
     {
@@ -36,7 +55,7 @@ StartOrMinimizeDictation()
 EnsureDictationRunning()
 {
     global dictationTitle
-    if !WinExist(dictationTitle)
+    if !WinExist(dictationTitle) && !IsDictationProcessRunning()
         StartOrMinimizeDictation()
 }
 
