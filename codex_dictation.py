@@ -17,12 +17,12 @@ def _command_aliases(*values:str)->set[str]:
         if cleaned: out.add(cleaned)
     return out
 
-ENTER_COMMANDS=_command_aliases("엔터","전송","보내","보내줘","보내 줘")
+ENTER_COMMANDS=_command_aliases("보내","보내줘","보내 줘","완료","완료해줘","완료 해줘")
 UNDO_LAST_COMMANDS=_command_aliases("취소","방금 지워","방금 지워줘","마지막 지워","마지막 지워줘","한번 지워","한 번 지워","직전 지워")
 CLEAR_ALL_COMMANDS=_command_aliases("전부 지워","전부 지워줘","다 지워","다 지워줘","전체 지워","전체 지워줘","모두 지워","모두 지워줘","싹 지워","싹 지워줘")
 DELETE_SOUND_ALIASES=_command_aliases("지워","지워줘","지워 줘","지어","지어줘","지어 줘","치워","치워줘","치워 줘","치어","치어줘","삭제","삭제해","삭제해줘")
-CORRECTION_PREFIXES=("다시 ", "다시, ", "수정 ", "수정, ", "바꿔 ", "바꿔, ", "정정 ", "정정, ", "그게 아니라 ", "그게 아니라, ", "아 그게 아니라 ", "아 그게 아니라, ", "아니 ", "아니고 ")
-COMMAND_PROMPT="엔터 전송 보내 취소 방금 지워 마지막 지워 전부 지워 다 지워 전체 지워 모두 지워 다시 수정 바꿔 정정 그게 아니라 아니고"
+CORRECTION_PREFIXES=("다시 ", "다시, ")
+COMMAND_PROMPT="보내 완료 취소 방금 지워 마지막 지워 전부 지워 다 지워 전체 지워 모두 지워 다시"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
 
