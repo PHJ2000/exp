@@ -1,4 +1,5 @@
 .venv/
+AGENTS.md
 __pycache__/
 *.pyc
 codex-dictation/codex_dictation.history.jsonl
