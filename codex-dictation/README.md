@@ -1,0 +1,126 @@
+# Codex Dictation
+
+Codex CLI를 쓰면서 마이크로 말한 내용을 받아써서 터미널에 넣기 위한 Windows용 받아쓰기 도구입니다.
+
+기본 설계:
+- `전역 핫키`로 녹음 시작과 종료
+- `항상 듣기(always-listen)` 모드 지원
+- `로컬 faster-whisper`로 무료 받아쓰기
+- `클립보드 복사`, `자동 붙여넣기`, `직접 타이핑` 모드 지원
+- `Codex CLI` 창에 포커스를 둔 상태에서 바로 입력 가능
+- `음성 명령`으로 보내기, 마지막 삭제, 전체 삭제, 마지막 교체 가능
+- `백그라운드 시작` 지원
+
+## 비용
+
+- 이 받아쓰기 도구 자체는 `로컬 faster-whisper` 기반이라 추가 API 비용이 들지 않습니다.
+- 즉 받아쓰기 기능만 놓고 보면 별도 과금 없이 `내 PC 자원`으로 동작합니다.
+- 다만 `Codex CLI` 자체 사용 비용은 이 도구와 별개입니다.
+
+## 환경
+
+- 현재 이 저장소 기준으로는 루트의 `.venv`, `tools\AutoHotkey`, 그리고 `codex-dictation\` 디렉토리 기준으로 실행 흐름이 맞춰져 있습니다.
+- 그래서 이 PC처럼 이미 세팅된 환경에서는 보통 추가 설정 없이 바로 실행하면 됩니다.
+- 새 PC나 새 환경으로 옮길 때만 아래 정도가 필요합니다.
+  - Python 설치
+  - `.venv` 생성
+  - `pip install -r codex-dictation\requirements-dictation.txt`
+  - 마이크 장치 인식 확인
+- CUDA GPU는 있으면 더 빠르지만 필수는 아닙니다.
+
+## 설치
+
+가상환경이 없다면 먼저 만듭니다.
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -U pip
+.venv\Scripts\python.exe -m pip install -r codex-dictation\requirements-dictation.txt
+```
+
+이미 이 저장소의 `.venv`를 쓰고 있다면 마지막 줄만 실행하면 됩니다.
+
+## 실행
+
+```powershell
+.venv\Scripts\python.exe codex-dictation\codex_dictation.py
+```
+
+`codex-dictation` 폴더 안의 런처로 실행:
+
+```powershell
+codex-dictation\run_codex_dictation.bat
+```
+
+Codex 터미널만 빠르게 열기:
+
+```powershell
+codex-dictation\run_codex_terminal.bat
+```
+
+## AutoHotkey 런처
+
+`codex-dictation\launch_codex_dictation.ahk`를 AutoHotkey v2로 실행하면 전역 단축키를 쓸 수 있습니다.
+이 저장소는 AutoHotkey 엔진을 `tools\AutoHotkey` 아래에 로컬로 배치해두었고, 시작프로그램 등록도 해둘 수 있습니다.
+
+현재 기본 전역 단축키:
+- `F1`: 받아쓰기 앱 백그라운드 실행 또는 최소화
+- `F2`: 받아쓰기 앱 설정 창 보이기
+- `F3`: 받아쓰기 앱 설정 창 숨기기
+- `F4`: 받아쓰기 앱 종료
+
+편하게 실행하는 방법:
+1. `codex-dictation\run_codex_hotkeys.bat` 실행
+2. 이후엔 `F1`만 누르면 됩니다
+3. 시작프로그램에 등록해두면 로그인 후에도 자동으로 살아납니다
+
+## 추천 사용 흐름
+
+1. Codex CLI가 떠 있는 터미널 창으로 포커스를 옮깁니다.
+2. 항상 듣기는 기본으로 켜져 있으니 별도 조작 없이 바로 씁니다.
+3. 포커스된 창이 터미널이면 말이 감지되고, 침묵 뒤에 자동 전사되어 입력됩니다.
+4. 맞으면 `보내`, 틀리면 `지워`, `두 번 지워`, `세 번 지워`, `다 지워`, `다시 OO`처럼 말합니다.
+
+## 편의 기능
+
+- 마이크 장치 선택
+- Whisper 모델 크기 선택
+- 언어 고정 (`ko`, `en`) 또는 자동 감지
+- 전후 무음 트리밍
+- 최대 녹음 길이 제한
+- 빠른 문장 종료 감지
+- 타겟 창이 활성화된 동안만 동작하는 항상 듣기 모드
+- 마지막 결과 재붙여넣기
+- 음성 명령
+  - 메인 명령은 `보내`, `지워`, `다 지워`, `다시 OO`만 기억하면 됩니다.
+  - `지워`는 마지막 한 덩어리를 지웁니다.
+  - `두 번 지워`, `세 번 지워`, `5번 지워`처럼 최근 여러 덩어리를 한 번에 지울 수 있습니다.
+  - 실제 인식은 발음 흔들림을 감안해 `보내`, `지워`, `다 지워`, `다시` 계열에 몇 가지 변형 표현도 같이 받습니다.
+- 기록 저장: `codex_dictation.history.jsonl`
+- 설정 저장: `codex_dictation.settings.json`
+- 활동 로그: `codex_dictation.log`
+
+## 점검
+
+환경 점검:
+
+```powershell
+.venv\Scripts\python.exe codex-dictation\codex_dictation.py --doctor
+```
+
+파일 전사 테스트:
+
+```powershell
+.venv\Scripts\python.exe codex-dictation\codex_dictation.py --transcribe-file some_audio.wav --model tiny --language ko
+```
+
+## 메모
+
+- 기본 백엔드는 `faster-whisper`라서 로컬에서 무료로 돌 수 있습니다.
+- 처음 특정 Whisper 모델을 고르면 모델 다운로드가 한 번 필요합니다.
+- 자동 붙여넣기는 보통 `Ctrl+V`로 동작하므로, Codex CLI를 여는 터미널이 해당 붙여넣기 단축키를 받아야 합니다.
+- `지워` 계열은 기본적으로 `마지막으로 이 앱이 넣은 텍스트`를 지웁니다.
+- `다 지워`는 아직 보내지지 않은 현재 입력 줄 전체를 지웁니다.
+- 일반 받아쓰기 뒤에는 공백 한 칸이 자동으로 붙습니다.
+- 실제 인식에서는 `보내`, `지워`, `다 지워`, `다시`의 발음 흔들림을 일부 자동으로 허용합니다.
+- 이미 `보내`로 제출된 문장은 안전하게 되돌리기 어렵기 때문에, 보통은 `문장 -> 다시 말하기 -> 보내` 흐름이 가장 안정적입니다.

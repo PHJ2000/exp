@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+codex-dictation/codex_dictation.history.jsonl
+codex-dictation/codex_dictation.log
+tmp_*.txt
