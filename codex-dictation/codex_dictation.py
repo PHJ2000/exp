@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, ctypes, json, queue, sys, tempfile, threading, time, traceback
+import argparse, ctypes, json, os, queue, sys, tempfile, threading, time, traceback
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -7,9 +7,18 @@ from pathlib import Path
 import numpy as np, sounddevice as sd, soundfile as sf, tkinter as tk
 from tkinter import messagebox, ttk
 
-APP_NAME="Codex Dictation"; ROOT=Path(__file__).resolve().parent
+APP_NAME="Codex Dictation"; ROOT=Path(__file__).resolve().parent; APP_PID=os.getpid()
 SETTINGS_PATH=ROOT/"codex_dictation.settings.json"; HISTORY_PATH=ROOT/"codex_dictation.history.jsonl"; LOG_PATH=ROOT/"codex_dictation.log"
 TERMINALS={"windowsterminal.exe","wezterm-gui.exe","conhost.exe","powershell.exe","pwsh.exe","cmd.exe","mintty.exe","alacritty.exe","rio.exe","code.exe","cursor.exe"}
+EXCLUDED_TARGET_PROCS={"autohotkey64.exe","shellexperiencehost.exe","dwm.exe"}
+EXCLUDED_TARGET_CLASSES={"TkTopLevel","Shell_TrayWnd","Progman","WorkerW"}
+INPUT_FOCUS_CLASSES={"Edit","RichEdit20A","RichEdit20W","RichEdit50W","Scintilla","Chrome_RenderWidgetHostHWND","Internet Explorer_Server"}
+WEB_INPUT_PROCS={"chrome.exe","msedge.exe","brave.exe","whale.exe","firefox.exe","kakaotalk.exe","discord.exe","slack.exe","telegram.exe"}
+BROWSER_FALLBACK_PROCS={"chrome.exe","msedge.exe","brave.exe","whale.exe","firefox.exe","discord.exe","slack.exe","telegram.exe"}
+BROWSER_WINDOW_CLASSES={"Chrome_WidgetWin_1","MozillaWindowClass"}
+WINDOWS_SEARCH_PROCS={"searchhost.exe","startmenuexperiencehost.exe","searchapp.exe"}
+SYSTEM_INPUT_PROCS={"systemsettings.exe","applicationframehost.exe","explorer.exe"}
+SYSTEM_INPUT_CLASSES={"ApplicationFrameWindow","Windows.UI.Core.CoreWindow","CabinetWClass","#32770","XamlExplorerHostIslandWindow"}
 def _command_aliases(*values:str)->set[str]:
     out=set()
     for value in values:
@@ -49,6 +58,10 @@ class Settings:
 @dataclass
 class WinInfo:
     hwnd:int; pid:int; title:str; cls:str; proc:str
+
+@dataclass
+class FocusInfo:
+    focus_hwnd:int; focus_cls:str; caret_hwnd:int; caret_cls:str; caret_visible:bool
 
 def load_settings()->Settings:
     if not SETTINGS_PATH.exists():
@@ -147,6 +160,17 @@ def fg_info()->WinInfo|None:
     cls=ctypes.create_unicode_buffer(256); u.GetClassNameW(hwnd,cls,256); pid=ctypes.c_ulong(); u.GetWindowThreadProcessId(hwnd,ctypes.byref(pid))
     return WinInfo(int(hwnd),int(pid.value),title.value,cls.value,safe_proc(int(pid.value)))
 
+def hwnd_class(hwnd:int)->str:
+    if not hwnd:
+        return ""
+    u=ctypes.windll.user32
+    cls=ctypes.create_unicode_buffer(256)
+    try:
+        u.GetClassNameW(hwnd,cls,256)
+        return cls.value
+    except Exception:
+        return ""
+
 def fmt_info(info:WinInfo|None)->str:
     if not info: return "No active window"
     return f"{info.proc or 'unknown'} | {(info.title or '(no title)')} | {info.cls or 'unknown'} | hwnd={info.hwnd}"
@@ -157,8 +181,64 @@ def is_terminal(info:WinInfo|None)->bool:
 def is_codex_terminal(info:WinInfo|None)->bool:
     return bool(info and is_terminal(info) and ("codex" in info.title.lower() or has_codex(info.pid)))
 
-def is_target_terminal(info:WinInfo|None)->bool:
-    return bool(info and (is_codex_terminal(info) or is_terminal(info)))
+def gui_focus_info(info:WinInfo|None)->FocusInfo|None:
+    if not info:
+        return None
+    class RECT(ctypes.Structure):
+        _fields_=[("left",ctypes.c_long),("top",ctypes.c_long),("right",ctypes.c_long),("bottom",ctypes.c_long)]
+    class GUITHREADINFO(ctypes.Structure):
+        _fields_=[
+            ("cbSize",ctypes.c_ulong),
+            ("flags",ctypes.c_ulong),
+            ("hwndActive",ctypes.c_void_p),
+            ("hwndFocus",ctypes.c_void_p),
+            ("hwndCapture",ctypes.c_void_p),
+            ("hwndMenuOwner",ctypes.c_void_p),
+            ("hwndMoveSize",ctypes.c_void_p),
+            ("hwndCaret",ctypes.c_void_p),
+            ("rcCaret",RECT),
+        ]
+    user32=ctypes.windll.user32
+    try:
+        thread_id=user32.GetWindowThreadProcessId(info.hwnd,None)
+        gui=GUITHREADINFO()
+        gui.cbSize=ctypes.sizeof(GUITHREADINFO)
+        if not user32.GetGUIThreadInfo(thread_id,ctypes.byref(gui)):
+            return None
+        focus_hwnd=int(gui.hwndFocus or 0)
+        caret_hwnd=int(gui.hwndCaret or 0)
+        caret_rect=gui.rcCaret
+        caret_visible=any(int(v)!=0 for v in (caret_rect.left,caret_rect.top,caret_rect.right,caret_rect.bottom))
+        return FocusInfo(focus_hwnd,hwnd_class(focus_hwnd),caret_hwnd,hwnd_class(caret_hwnd),caret_visible)
+    except Exception:
+        return None
+
+def is_general_input_target(info:WinInfo|None)->bool:
+    if not info:
+        return False
+    if info.pid==APP_PID or info.proc in EXCLUDED_TARGET_PROCS or info.cls in EXCLUDED_TARGET_CLASSES:
+        return False
+    if info.proc not in WINDOWS_SEARCH_PROCS and not (info.title or "").strip() and not is_terminal(info):
+        return False
+    focus=gui_focus_info(info)
+    if not focus:
+        return False
+    if info.proc in WINDOWS_SEARCH_PROCS:
+        return True
+    if focus.caret_hwnd or focus.caret_visible:
+        return True
+    if focus.focus_cls in INPUT_FOCUS_CLASSES or focus.caret_cls in INPUT_FOCUS_CLASSES:
+        return True
+    if info.proc in SYSTEM_INPUT_PROCS and info.cls in SYSTEM_INPUT_CLASSES:
+        return True
+    if info.proc in WEB_INPUT_PROCS and focus.focus_hwnd and focus.focus_hwnd != info.hwnd:
+        return True
+    if info.proc in BROWSER_FALLBACK_PROCS and info.cls in BROWSER_WINDOW_CLASSES:
+        return True
+    return False
+
+def is_target_window(info:WinInfo|None)->bool:
+    return bool(info and (is_terminal(info) or is_general_input_target(info)))
 
 def list_terminal_windows()->list[WinInfo]:
     user32=ctypes.windll.user32
@@ -186,19 +266,23 @@ def list_terminal_windows()->list[WinInfo]:
     user32.EnumWindows(enum_proc(_cb), 0)
     return windows
 
-def focus_best_terminal()->bool:
+def focus_window(hwnd:int)->bool:
     user32=ctypes.windll.user32
-    wins=list_terminal_windows()
-    if not wins:
+    if not hwnd:
         return False
-    target=wins[0]
     try:
-        if user32.IsIconic(target.hwnd):
-            user32.ShowWindow(target.hwnd, 9)
-        user32.SetForegroundWindow(target.hwnd)
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)
+        user32.SetForegroundWindow(hwnd)
         return True
     except Exception:
         return False
+
+def focus_best_terminal()->bool:
+    wins=list_terminal_windows()
+    if not wins:
+        return False
+    return focus_window(wins[0].hwnd)
 
 class WhisperBackend:
     def __init__(self): self.cache={}; self.lock=threading.Lock()
@@ -274,7 +358,8 @@ def doctor(settings:Settings|None=None)->str:
         devs=get_input_devices(); lines.append(f"Input devices: {len(devs)}")
         for d in devs[:10]: lines.append(f"  - [{d['index']}] {d['name']} ({d['sample_rate']} Hz)")
     except Exception as e: lines.append(f"Input devices: failed ({e})")
-    info=fg_info(); lines += [f"Foreground window: {fmt_info(info)}",f"Looks like terminal: {is_terminal(info)}",f"Looks like Codex terminal: {is_codex_terminal(info)}",f"Accepts as target terminal: {is_target_terminal(info)}"]
+    info=fg_info(); focus=gui_focus_info(info)
+    lines += [f"Foreground window: {fmt_info(info)}",f"Focused child hwnd: {getattr(focus,'focus_hwnd',0)} | class={getattr(focus,'focus_cls','') or 'none'}",f"Caret hwnd: {getattr(focus,'caret_hwnd',0)} | class={getattr(focus,'caret_cls','') or 'none'} | visible={getattr(focus,'caret_visible',False)}",f"Looks like terminal: {is_terminal(info)}",f"Looks like Codex terminal: {is_codex_terminal(info)}",f"Looks like general input target: {is_general_input_target(info)}",f"Accepts as target window: {is_target_window(info)}"]
     for name,imp in [("keyboard","keyboard"),("faster-whisper","faster_whisper"),("psutil","psutil")]:
         try: __import__(imp); lines.append(f"{name}: OK")
         except Exception as e: lines.append(f"{name}: missing ({e})")
@@ -289,8 +374,9 @@ def transcribe_file(file_path:Path,settings:Settings)->str:
     text=WhisperBackend().transcribe(file_path,settings); return normalize_text(text) if settings.normalize_whitespace else text
 
 class App:
-    def __init__(self,root:tk.Tk):
+    def __init__(self,root:tk.Tk,launch_target:WinInfo|None=None):
         self.root=root; self.root.title(APP_NAME); self.root.geometry("980x780"); self.root.protocol("WM_DELETE_WINDOW",self.close)
+        self.launch_target=launch_target
         self.s=load_settings()
         if not self.s.input_device: self.s.input_device = default_input_device_name()
         save_settings(self.s)
@@ -306,7 +392,7 @@ class App:
         top=ttk.Frame(self.root,padding=(12,0,12,0)); top.grid(row=1,column=0,sticky="nsew"); top.columnconfigure((0,1),weight=1); left=ttk.LabelFrame(top,text="Recording",padding=12); right=ttk.LabelFrame(top,text="Output, Target, Hotkeys",padding=12); left.grid(row=0,column=0,sticky="nsew",padx=(0,6)); right.grid(row=0,column=1,sticky="nsew",padx=(6,0))
         self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],2); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],3); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],4); self._entry(left,"Language","language",5); self._entry(left,"Initial Prompt","initial_prompt",6); self._entry(left,"Max Record Seconds","max_record_seconds",7); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",8); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",9)
         self._check(left,"Trim leading and trailing silence","trim_silence",10); self._check(left,"Normalize whitespace","normalize_whitespace",11); self._check(left,"Enable manual mode auto stop","enable_auto_stop",12); self._check(left,"Play feedback beeps","beep_feedback",13); self._check(left,"Keep window on top","keep_window_on_top",14)
-        self._combo(right,"Output Mode","output_mode",["paste","clipboard","type"],0); self._entry(right,"Paste Hotkey","paste_hotkey",1); self._check(right,"Press Enter after output","auto_enter",2); self._check(right,"Always listen when target window is focused","always_listen_enabled",3); self._entry(right,"Always Listen Hotkey","always_listen_hotkey",4); self._entry(right,"Record Hotkey","record_hotkey",5); self._entry(right,"Paste Last Hotkey","paste_last_hotkey",6); self._entry(right,"Toggle Output Hotkey","toggle_output_hotkey",7); self._entry(right,"Toggle Enter Hotkey","toggle_enter_hotkey",8)
+        self._combo(right,"Output Mode","output_mode",["paste","clipboard","type"],0); self._entry(right,"Paste Hotkey","paste_hotkey",1); self._check(right,"Press Enter after output","auto_enter",2); self._check(right,"Always listen when target input window is focused","always_listen_enabled",3); self._entry(right,"Always Listen Hotkey","always_listen_hotkey",4); self._entry(right,"Record Hotkey","record_hotkey",5); self._entry(right,"Paste Last Hotkey","paste_last_hotkey",6); self._entry(right,"Toggle Output Hotkey","toggle_output_hotkey",7); self._entry(right,"Toggle Enter Hotkey","toggle_enter_hotkey",8)
         btn=ttk.Frame(right); btn.grid(row=9,column=0,columnspan=2,sticky="ew",pady=(14,0)); [btn.columnconfigure(i,weight=1) for i in range(3)]
         for r,c,text,cmd in [(0,0,"Start / Stop Manual",self.toggle_recording),(0,1,"Toggle Always Listen",self.toggle_always_listen),(0,2,"Paste Last",self.paste_last),(1,0,"Save Settings",self.save_from_ui),(1,1,"Doctor",self.show_doctor),(1,2,"Refresh Hotkeys",self.register_hotkeys),(2,0,"Copy Last",self.copy_last)]:
             ttk.Button(btn,text=text,command=cmd).grid(row=r,column=c,sticky="ew",padx=6 if c==1 else (0 if c==0 else 6),pady=(8 if r else 0,0))
@@ -319,10 +405,10 @@ class App:
         append_app_log(msg)
         self.log_q.put(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     def refresh_status(self,activity="Idle"): self.status.set(f"{activity} | {self.s.output_mode.upper()}{' + ENTER' if self.s.auto_enter else ''}{' | ALWAYS-ON' if self.listen.on else ''}")
-    def refresh_target(self): self.target.set("Target: focused terminal window")
+    def refresh_target(self): self.target.set("Target: focused terminal or input field")
     def bootstrap_after_launch(self):
         self.minimize_after_startup()
-        self.focus_terminal_after_startup()
+        self.restore_launch_target_after_startup()
         self.refresh_status("Warming up")
         self.warmup_model()
         self.register_hotkeys()
@@ -336,14 +422,17 @@ class App:
             self.log("Window minimized after startup")
         except Exception as e:
             self.log(f"Startup minimize skipped: {e}")
-    def focus_terminal_after_startup(self):
+    def restore_launch_target_after_startup(self):
         try:
             if self.target_active():
+                return
+            if self.launch_target and self.launch_target.pid!=APP_PID and focus_window(self.launch_target.hwnd):
+                self.log("Focused previous window after startup")
                 return
             if focus_best_terminal():
                 self.log("Focused terminal after startup")
         except Exception as e:
-            self.log(f"Startup terminal focus skipped: {e}")
+            self.log(f"Startup target focus skipped: {e}")
     def save_from_ui(self):
         for k,v in self.vars.items():
             cur=getattr(self.s,k); raw=v.get().strip()
@@ -371,7 +460,7 @@ class App:
     def target_active(self)->bool:
         info=fg_info()
         if not info: return False
-        return is_target_terminal(info)
+        return is_target_window(info)
     def sync_listener(self):
         if self.s.always_listen_enabled and not self.listen.on:
             try: self.listen.start()
@@ -599,9 +688,10 @@ def main():
     if not acquire_single_instance():
         append_app_log("Another instance is already running; exiting duplicate launch")
         return
+    launch_target=fg_info()
     root=tk.Tk(); style=ttk.Style()
     try: style.theme_use("vista")
     except Exception: pass
-    App(root); root.mainloop()
+    App(root,launch_target=launch_target); root.mainloop()
 
 if __name__=="__main__": main()
