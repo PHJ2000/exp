@@ -1,8 +1,9 @@
 @echo off
 setlocal
-set "ROOT=%~dp0"
-set "AHK=%ROOT%tools\AutoHotkey\AutoHotkey64.exe"
-set "SCRIPT=%ROOT%launch_codex_dictation.ahk"
+set "APP_DIR=%~dp0"
+set "REPO_ROOT=%APP_DIR%..\"
+set "AHK=%REPO_ROOT%tools\AutoHotkey\AutoHotkey64.exe"
+set "SCRIPT=%APP_DIR%launch_codex_dictation.ahk"
 
 if not exist "%AHK%" (
   echo AutoHotkey executable not found: "%AHK%"
