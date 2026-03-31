@@ -1,0 +1,41 @@
+name: 작업 이슈
+description: 디렉토리 기준으로 작업 범위를 짧게 정리합니다.
+title: "[작업] "
+labels: []
+body:
+  - type: dropdown
+    id: target_directory
+    attributes:
+      label: 대상 디렉토리
+      description: 이번 작업이 주로 영향을 주는 디렉토리를 고르세요.
+      options:
+        - codex-dictation
+        - experiments
+        - external
+        - inputs
+        - models
+        - outputs
+        - temp
+        - tools
+        - root
+        - 기타
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 작업 내용
+      description: 무엇을 바꾸려는지 짧게 적어주세요.
+      placeholder: 예) 터미널 전용 입력을 포커스된 일반 입력창까지 확장
+    validations:
+      required: true
+
+  - type: textarea
+    id: done_when
+    attributes:
+      label: 완료 기준
+      description: 무엇이 되면 끝난 것으로 볼지 적어주세요.
+      placeholder: 예) 카톡, 브라우저 검색창, 일반 텍스트 입력창에서 받아쓰기 가능
+    validations:
+      required: true
