@@ -35,7 +35,8 @@ PASTE_UNDO_COMMANDS=_command_aliases("취소","붙여넣기 취소","붙여 넣�
 REPLACE_UNDO_COMMANDS=_command_aliases("되돌려","교체 취소","바꾼 거 취소")
 CLEAR_ALL_COMMANDS=_command_aliases("다 지워","다 지어","다 치워","다 지워줘","다 치워줘","전부 지워","전부 지어","전부 치워","전체 지워","전체 지어","전체 치워","모두 지워","모두 지어","모두 치워","싹 지워","싹 지어","몽땅 지워")
 CLEAR_FOCUSED_INPUT_COMMANDS=_command_aliases("전체 비워","전부 비워","입력창 비워")
-ESCAPE_COMMANDS=_command_aliases("esc","이에스씨","이스케이프","이스케이프 눌러","전체화면 해제","전체 화면 해제","전체화면 풀어","전체 화면 풀어")
+ESCAPE_COMMANDS=_command_aliases("이스케이프","이스케이프 눌러","나가기","전체화면 나가기","전체 화면 나가기")
+PLAY_PAUSE_COMMANDS=_command_aliases("일시정지","일시 정지","재생","재생해","재생해줘","멈춰","멈춰줘","멈춤","플레이","플레이해","플레이 해")
 SEEK_FORWARD_COMMANDS=_command_aliases("앞으로 감기","앞으로감기","앞으로 감아","앞으로감아","앞으로 넘겨","앞으로넘겨")
 SEEK_BACKWARD_COMMANDS=_command_aliases("뒤로 감기","뒤로감기","뒤로 감아","뒤로감아","뒤로 넘겨","뒤로넘겨")
 DELETE_SOUND_ALIASES=_command_aliases("지워","지어","치워","지워요","지어요","치워요","지워줘","지어줘","치워줘","지워줘요","치워줘요","지우","치우")
@@ -46,7 +47,7 @@ LANGUAGE_SWITCH_COMMANDS={
     **{key:"en" for key in _command_aliases("영어","영어로","잉글리시")},
 }
 LANGUAGE_UI_LABELS={"auto":"자동","ko":"한국어","en":"영어"}
-COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 전체 비워 전부 비워 입력창 비워 다시 다시 말해 다시 말해줘 복사 붙여넣기 붙여 넣기 잘라 잘라내기 취소 되돌려 자동 한국어 영어 esc 이스케이프 앞으로 감기 뒤로 감기"
+COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 전체 비워 전부 비워 입력창 비워 다시 다시 말해 다시 말해줘 복사 붙여넣기 붙여 넣기 잘라 잘라내기 취소 되돌려 자동 한국어 영어 이스케이프 나가기 일시정지 재생 앞으로 감기 뒤로 감기"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
 SLOT_NUMBER_WORDS={
@@ -82,6 +83,7 @@ class Settings:
     trim_silence:bool=True; trim_threshold:float=0.008; normalize_whitespace:bool=True; max_record_seconds:int=45; min_record_seconds:float=0.25
     beep_feedback:bool=False; keep_window_on_top:bool=False; enable_auto_stop:bool=False; auto_stop_silence_seconds:float=0.65
     always_listen_enabled:bool=True; always_listen_preroll_seconds:float=0.25
+    voice_trigger_min_rms:float=0.018; voice_trigger_ratio:float=2.2; voice_trigger_consecutive_blocks:int=2
 
 @dataclass
 class WinInfo:
@@ -263,6 +265,11 @@ def trim_silence(audio:np.ndarray,th:float)->np.ndarray:
     if voiced.size==0: return audio
     a=max(int(voiced[0])-1600,0); b=min(int(voiced[-1])+1600,len(audio)); return audio[a:b]
 
+def rms_level(audio:np.ndarray)->float:
+    if audio.size==0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(audio))))
+
 def normalize_text(text:str)->str: return " ".join(text.replace("\r"," ").replace("\n"," ").split()).strip()
 def initial_prompt_for_commands(settings:Settings)->str:
     base=(settings.initial_prompt or "").strip()
@@ -430,6 +437,17 @@ def focus_best_terminal()->bool:
         return False
     return focus_window(wins[0].hwnd)
 
+def send_media_virtual_key(vk_code:int)->bool:
+    user32=ctypes.windll.user32
+    KEYEVENTF_KEYUP=0x0002
+    try:
+        user32.keybd_event(vk_code, 0, 0, 0)
+        time.sleep(0.02)
+        user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
+        return True
+    except Exception:
+        return False
+
 class WhisperBackend:
     def __init__(self): self.cache={}; self.lock=threading.Lock()
     def _model(self,s:Settings):
@@ -449,10 +467,10 @@ class WhisperBackend:
         return " ".join(x.text.strip() for x in segs).strip()
 
 class Recorder:
-    def __init__(self,s:Settings,log): self.s=s; self.log=log; self.stream=None; self.chunks=[]; self.lock=threading.Lock(); self.t0=0.0; self.last_voice=0.0; self.on=False
+    def __init__(self,s:Settings,log): self.s=s; self.log=log; self.stream=None; self.chunks=[]; self.lock=threading.Lock(); self.t0=0.0; self.last_voice=0.0; self.on=False; self.noise_floor=max(self.s.trim_threshold*0.8,0.003)
     def start(self):
         if self.on: return
-        self.chunks=[]; self.t0=time.monotonic(); self.last_voice=self.t0
+        self.chunks=[]; self.t0=time.monotonic(); self.last_voice=self.t0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003)
         self.stream=sd.InputStream(samplerate=self.s.sample_rate,channels=self.s.channels,dtype="float32",device=resolve_input_device(self.s.input_device),callback=self._cb); self.stream.start(); self.on=True; self.log("Recording started")
     def stop(self)->np.ndarray:
         if not self.on: return np.zeros(0,dtype=np.float32)
@@ -465,10 +483,15 @@ class Recorder:
         if status: self.log(f"Audio status: {status}")
         mono=indata[:,0].copy()
         with self.lock: self.chunks.append(mono)
-        if mono.size and float(np.sqrt(np.mean(np.square(mono))))>max(self.s.trim_threshold,0.008): self.last_voice=time.monotonic()
+        rms=rms_level(mono)
+        threshold=max(self.s.trim_threshold, self.s.voice_trigger_min_rms, self.noise_floor*self.s.voice_trigger_ratio)
+        if rms>=threshold:
+            self.last_voice=time.monotonic()
+        else:
+            self.noise_floor=(self.noise_floor*0.96)+(rms*0.04)
 
 class AlwaysListen:
-    def __init__(self,s:Settings,log,on_audio,target_active): self.s=s; self.log=log; self.on_audio=on_audio; self.target_active=target_active; self.stream=None; self.on=False; self.lock=threading.Lock(); self.pre=deque(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0
+    def __init__(self,s:Settings,log,on_audio,target_active): self.s=s; self.log=log; self.on_audio=on_audio; self.target_active=target_active; self.stream=None; self.on=False; self.lock=threading.Lock(); self.pre=deque(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003); self.voice_hits=0
     def start(self):
         if self.on: return
         self.reset(); self.stream=sd.InputStream(samplerate=self.s.sample_rate,channels=self.s.channels,dtype="float32",device=resolve_input_device(self.s.input_device),blocksize=max(int(self.s.sample_rate*0.06),512),callback=self._cb); self.stream.start(); self.on=True; self.log("Always-listen started")
@@ -476,7 +499,7 @@ class AlwaysListen:
         if not self.on: return
         self.stream.stop(); self.stream.close(); self.stream=None; self.on=False; self.reset(); self.log("Always-listen stopped")
     def reset(self):
-        with self.lock: self.pre.clear(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0
+        with self.lock: self.pre.clear(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003); self.voice_hits=0
     def _push_pre(self,mono):
         self.pre.append(mono); self.pre_n+=len(mono); limit=int(self.s.sample_rate*self.s.always_listen_preroll_seconds)
         while self.pre and self.pre_n>limit: self.pre_n-=len(self.pre.popleft())
@@ -487,14 +510,26 @@ class AlwaysListen:
         if status: self.log(f"Always-listen audio status: {status}")
         mono=indata[:,0].copy()
         if not self.target_active(): self.reset(); return
-        rms=float(np.sqrt(np.mean(np.square(mono))) if mono.size else 0.0); voice=rms>=max(self.s.trim_threshold,0.008); now=time.monotonic()
+        rms=rms_level(mono)
+        threshold=max(self.s.trim_threshold, self.s.voice_trigger_min_rms, self.noise_floor*self.s.voice_trigger_ratio)
+        voice=rms>=threshold
+        now=time.monotonic()
         with self.lock:
             if not self.chunks:
                 self._push_pre(mono)
-                if voice: self.chunks=list(self.pre); self.n=sum(len(x) for x in self.chunks); self.pre.clear(); self.pre_n=0; self.last_voice=now; self.log("Voice detected in target window")
+                if voice:
+                    self.voice_hits+=1
+                else:
+                    self.voice_hits=0
+                    self.noise_floor=(self.noise_floor*0.96)+(rms*0.04)
+                if self.voice_hits>=max(int(self.s.voice_trigger_consecutive_blocks),1):
+                    self.chunks=list(self.pre); self.n=sum(len(x) for x in self.chunks); self.pre.clear(); self.pre_n=0; self.last_voice=now; self.voice_hits=0; self.log(f"Voice detected in target window (rms={rms:.4f}, threshold={threshold:.4f})")
             else:
                 self.chunks.append(mono); self.n+=len(mono)
-                if voice: self.last_voice=now
+                if voice:
+                    self.last_voice=now
+                else:
+                    self.noise_floor=(self.noise_floor*0.98)+(rms*0.02)
                 if self.n/max(self.s.sample_rate,1)>=self.s.max_record_seconds or now-self.last_voice>=self.s.auto_stop_silence_seconds: self._finalize()
 
 def doctor(settings:Settings|None=None)->str:
@@ -536,7 +571,7 @@ class App:
         self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self.root.after(50,self.bootstrap_after_launch); self.root.after(80,self.poll); self.root.after(120,self.poll_record); self.root.after(150,self.poll_target)
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
-        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 전체 비워, 다시 ..., 복사, 붙여넣기, 잘라, 취소, 되돌려, 자동/한국어/영어, esc, 앞으로/뒤로 감기").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
+        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 전체 비워, 다시 ..., 복사, 붙여넣기, 잘라, 취소, 되돌려, 자동/한국어/영어, 이스케이프/나가기, 일시정지/재생, 앞으로/뒤로 감기").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
         top=ttk.Frame(self.root,padding=(12,0,12,0)); top.grid(row=1,column=0,sticky="nsew"); top.columnconfigure((0,1),weight=1); left=ttk.LabelFrame(top,text="Recording",padding=12); right=ttk.LabelFrame(top,text="Output, Target, Hotkeys",padding=12); left.grid(row=0,column=0,sticky="nsew",padx=(0,6)); right.grid(row=0,column=1,sticky="nsew",padx=(6,0))
         self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],2); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],3); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],4); self._combo(left,"Language","language",["자동","한국어","영어"],5); self._entry(left,"Initial Prompt","initial_prompt",6); self._entry(left,"Max Record Seconds","max_record_seconds",7); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",8); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",9)
         self._check(left,"Trim leading and trailing silence","trim_silence",10); self._check(left,"Normalize whitespace","normalize_whitespace",11); self._check(left,"Enable manual mode auto stop","enable_auto_stop",12); self._check(left,"Play feedback beeps","beep_feedback",13); self._check(left,"Keep window on top","keep_window_on_top",14)
@@ -985,11 +1020,13 @@ class App:
         self.refresh_status()
         self.log(f"Voice command executed: language -> {language_label(self.s.language)}")
         return True
-    def parse_media_seek(self,text:str)->tuple[str,int]|None:
+    def parse_media_command(self,text:str)->tuple[str,int]|None:
         raw=text.strip().lower()
         compact=self._command_key(text)
         if compact in ESCAPE_COMMANDS:
             return ("escape",1)
+        if compact in PLAY_PAUSE_COMMANDS:
+            return ("play_pause",1)
         if compact in SEEK_FORWARD_COMMANDS:
             return ("forward",1)
         if compact in SEEK_BACKWARD_COMMANDS:
@@ -1015,6 +1052,12 @@ class App:
         if not info or info.pid==APP_PID or info.proc in EXCLUDED_TARGET_PROCS or info.cls in EXCLUDED_TARGET_CLASSES:
             self.log("Voice command ignored: no controllable foreground window")
             return False
+        if action=="play_pause":
+            if not send_media_virtual_key(0xB3):
+                self.log("Voice command failed: media play_pause")
+                return False
+            self.log("Voice command executed: play/pause")
+            return True
         try:
             keyboard=self._keyboard()
         except Exception as e:
@@ -1069,7 +1112,7 @@ class App:
             return True
         if self.parse_language_switch(text):
             return True
-        if self.parse_media_seek(text):
+        if self.parse_media_command(text):
             return True
         if self.parse_delete_count(text):
             return True
@@ -1095,7 +1138,7 @@ class App:
         if key in CLEAR_ALL_COMMANDS: return self.clear_pending_input()
         language=self.parse_language_switch(text)
         if language: return self.set_language_mode(language)
-        media_action=self.parse_media_seek(text)
+        media_action=self.parse_media_command(text)
         if media_action: return self.execute_media_control(*media_action)
         delete_count=self.parse_delete_count(text)
         if delete_count: return self.undo_last_emitted(delete_count)
