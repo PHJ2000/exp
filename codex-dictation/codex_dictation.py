@@ -700,14 +700,41 @@ class App:
             self.buffer_slots[slot]=text
             self.log(f"Voice command executed: store slot {slot}")
         return True
+    def _remember_output_payload(self,payload:str,sent_enter:bool=False):
+        self.last_emitted=payload
+        self.last_submitted=bool(sent_enter)
+        if sent_enter:
+            self.pending_text=""
+            self.pending_segments=[]
+        else:
+            self.pending_text=f"{self.pending_text}{payload}"
+            self.pending_segments.append(payload)
+    def _paste_text_via_clipboard(self,text:str)->bool:
+        if not text:
+            return False
+        try:
+            keyboard=self._keyboard()
+        except Exception as e:
+            self.log(f"Output hotkeys unavailable: {e}")
+            return False
+        original=get_clipboard_text()
+        try:
+            if not set_clipboard_text(text):
+                return False
+            time.sleep(0.05)
+            keyboard.press_and_release(self._paste_hotkey())
+            return True
+        finally:
+            time.sleep(0.03)
+            set_clipboard_text(original)
     def _paste_payload(self,text:str)->bool:
         if not text:
             return False
-        info=fg_info()
-        append_space=has_precise_text_focus(info)
         self._update_latest_transcript(text)
-        self.emit_text(text,remember=True,press_enter=False,append_space=append_space)
-        self.last_paste_payload=f"{text} " if append_space else text
+        if not self._paste_text_via_clipboard(text):
+            return False
+        self._remember_output_payload(text,sent_enter=False)
+        self.last_paste_payload=text
         return True
     def _remember_replace_state(self,kind:str,old_text:str,new_payload:str,old_segment:str="",old_pending:str="",old_segments:list[str]|None=None):
         self.last_replace_state={
@@ -777,9 +804,15 @@ class App:
         if not self.last_paste_payload:
             self.log("Voice command ignored: no pasted text to undo")
             return False
+        payload=self.last_paste_payload
         if not self._run_hotkey_sequence("ctrl+z"):
             return False
         self.last_paste_payload=""
+        if self.pending_segments and self.pending_segments[-1]==payload:
+            self.pending_segments=self.pending_segments[:-1]
+            if self.pending_text.endswith(payload):
+                self.pending_text=self.pending_text[:-len(payload)]
+            self.last_emitted=self.pending_segments[-1] if self.pending_segments else ""
         self.log("Voice command executed: undo last paste")
         return True
     def undo_last_replace(self)->bool:
@@ -823,14 +856,7 @@ class App:
                 set_clipboard_text(original)
         if sent_enter: time.sleep(0.03); keyboard.press_and_release("enter")
         if remember:
-            self.last_emitted=payload
-            self.last_submitted=bool(sent_enter)
-            if sent_enter:
-                self.pending_text=""
-                self.pending_segments=[]
-            else:
-                self.pending_text=f"{self.pending_text}{payload}"
-                self.pending_segments.append(payload)
+            self._remember_output_payload(payload,sent_enter=sent_enter)
         self.log(f"Transcript sent via {self.s.output_mode}")
     def send_enter(self)->bool:
         try: keyboard=self._keyboard()
