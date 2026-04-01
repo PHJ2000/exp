@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse, ctypes, json, os, queue, sys, tempfile, threading, time, traceback
+from ctypes import wintypes
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -27,12 +28,29 @@ def _command_aliases(*values:str)->set[str]:
     return out
 
 ENTER_COMMANDS=_command_aliases("보내","보내요","보네","보네요","보내줘","보내 줘","보내줘요","보내 줘요")
+CUT_COMMANDS=_command_aliases("잘라","잘라내기","오려내기")
+COPY_COMMANDS=_command_aliases("복사","복사해","복사해줘")
+PASTE_COMMANDS=_command_aliases("붙여넣기","붙여 넣기","붙여넣어","붙여 넣어")
+PASTE_UNDO_COMMANDS=_command_aliases("취소","붙여넣기 취소","붙여 넣기 취소","붙인 거 지워","붙인 거 취소")
+REPLACE_UNDO_COMMANDS=_command_aliases("되돌려","교체 취소","바꾼 거 취소")
 CLEAR_ALL_COMMANDS=_command_aliases("다 지워","다 지어","다 치워","다 지워줘","다 치워줘","전부 지워","전부 지어","전부 치워","전체 지워","전체 지어","전체 치워","모두 지워","모두 지어","모두 치워","싹 지워","싹 지어","몽땅 지워")
 DELETE_SOUND_ALIASES=_command_aliases("지워","지어","치워","지워요","지어요","치워요","지워줘","지어줘","치워줘","지워줘요","치워줘요","지우","치우")
 CORRECTION_PREFIXES=("다시 말해줘 ", "다시말해줘 ", "다시 말해 ", "다시말해 ", "다시 해 ", "다시해 ", "다시 ", "다시, ")
-COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 다시 다시 말해 다시 말해줘"
+COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 다시 다시 말해 다시 말해줘 복사 붙여넣기 붙여 넣기 잘라 잘라내기 취소 되돌려"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
+SLOT_NUMBER_WORDS={
+    "1":1,"일":1,"하나":1,"한":1,
+    "2":2,"이":2,"둘":2,"두":2,
+    "3":3,"삼":3,"셋":3,"세":3,
+    "4":4,"사":4,"넷":4,"네":4,
+    "5":5,"오":5,"다섯":5,
+    "6":6,"육":6,"여섯":6,
+    "7":7,"칠":7,"일곱":7,
+    "8":8,"팔":8,"여덟":8,
+    "9":9,"구":9,"아홉":9,
+    "10":10,"십":10,"열":10,
+}
 DELETE_COUNT_WORDS={
     "한":1,"하나":1,"한번":1,"한 번":1,
     "두":2,"둘":2,"두번":2,"두 번":2,
@@ -62,6 +80,35 @@ class WinInfo:
 @dataclass
 class FocusInfo:
     focus_hwnd:int; focus_cls:str; caret_hwnd:int; caret_cls:str; caret_visible:bool
+
+CF_UNICODETEXT=13
+GMEM_MOVEABLE=0x0002
+CLIPBOARD_OPEN_RETRIES=20
+CLIPBOARD_OPEN_DELAY=0.025
+
+def _configure_clipboard_api():
+    user32=ctypes.windll.user32
+    kernel32=ctypes.windll.kernel32
+    user32.OpenClipboard.argtypes=[wintypes.HWND]
+    user32.OpenClipboard.restype=wintypes.BOOL
+    user32.CloseClipboard.argtypes=[]
+    user32.CloseClipboard.restype=wintypes.BOOL
+    user32.EmptyClipboard.argtypes=[]
+    user32.EmptyClipboard.restype=wintypes.BOOL
+    user32.GetClipboardData.argtypes=[wintypes.UINT]
+    user32.GetClipboardData.restype=wintypes.HANDLE
+    user32.SetClipboardData.argtypes=[wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype=wintypes.HANDLE
+    kernel32.GlobalAlloc.argtypes=[wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype=wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes=[wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype=wintypes.LPVOID
+    kernel32.GlobalUnlock.argtypes=[wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype=wintypes.BOOL
+    kernel32.GlobalFree.argtypes=[wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype=wintypes.HGLOBAL
+
+_configure_clipboard_api()
 
 def load_settings()->Settings:
     if not SETTINGS_PATH.exists():
@@ -96,6 +143,67 @@ def default_input_device_name():
         pass
     devs = get_input_devices()
     return devs[0]["name"] if devs else ""
+
+def _open_clipboard_with_retry(user32)->bool:
+    for _ in range(CLIPBOARD_OPEN_RETRIES):
+        if user32.OpenClipboard(None):
+            return True
+        time.sleep(CLIPBOARD_OPEN_DELAY)
+    return False
+
+def get_clipboard_text()->str:
+    user32=ctypes.windll.user32
+    kernel32=ctypes.windll.kernel32
+    if not _open_clipboard_with_retry(user32):
+        return ""
+    handle=None
+    locked=None
+    try:
+        handle=user32.GetClipboardData(CF_UNICODETEXT)
+        if not handle:
+            return ""
+        locked=kernel32.GlobalLock(handle)
+        if not locked:
+            return ""
+        return ctypes.wstring_at(locked)
+    except Exception:
+        return ""
+    finally:
+        if locked:
+            kernel32.GlobalUnlock(handle)
+        user32.CloseClipboard()
+
+def set_clipboard_text(text:str)->bool:
+    user32=ctypes.windll.user32
+    kernel32=ctypes.windll.kernel32
+    data=(text or "") + "\0"
+    buf_size=len(data)*ctypes.sizeof(ctypes.c_wchar)
+    handle=kernel32.GlobalAlloc(GMEM_MOVEABLE, buf_size)
+    if not handle:
+        return False
+    locked=None
+    try:
+        locked=kernel32.GlobalLock(handle)
+        if not locked:
+            return False
+        ctypes.memmove(locked, ctypes.create_unicode_buffer(data), buf_size)
+        kernel32.GlobalUnlock(handle)
+        locked=None
+        if not _open_clipboard_with_retry(user32):
+            return False
+        try:
+            user32.EmptyClipboard()
+            if not user32.SetClipboardData(CF_UNICODETEXT, handle):
+                return False
+            handle=None
+            return True
+        finally:
+            user32.CloseClipboard()
+    finally:
+        if locked:
+            kernel32.GlobalUnlock(handle)
+        if handle:
+            kernel32.GlobalFree(handle)
 
 def acquire_single_instance()->bool:
     global _single_instance_handle
@@ -236,6 +344,16 @@ def is_general_input_target(info:WinInfo|None)->bool:
     if info.proc in BROWSER_FALLBACK_PROCS and info.cls in BROWSER_WINDOW_CLASSES:
         return True
     return False
+
+def has_precise_text_focus(info:WinInfo|None)->bool:
+    if not info:
+        return False
+    focus=gui_focus_info(info)
+    if not focus:
+        return False
+    if focus.caret_hwnd or focus.caret_visible:
+        return True
+    return focus.focus_cls in INPUT_FOCUS_CLASSES or focus.caret_cls in INPUT_FOCUS_CLASSES
 
 def is_target_window(info:WinInfo|None)->bool:
     return bool(info and (is_terminal(info) or is_general_input_target(info)))
@@ -382,13 +500,14 @@ class App:
         save_settings(self.s)
         self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
         self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.pending_text=""; self.pending_segments=[]; self.last_target=None; self.t=None; self.startup_minimized=False
+        self.internal_buffer=""; self.buffer_slots={i:"" for i in range(1,11)}; self.last_paste_payload=""; self.last_replace_state=None
         self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","language","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
         self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self.root.after(50,self.bootstrap_after_launch); self.root.after(80,self.poll); self.root.after(120,self.poll_record); self.root.after(150,self.poll_target)
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
-        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 다시 ...").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
+        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 다시 ..., 복사, 붙여넣기, 잘라, 취소, 되돌려").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
         top=ttk.Frame(self.root,padding=(12,0,12,0)); top.grid(row=1,column=0,sticky="nsew"); top.columnconfigure((0,1),weight=1); left=ttk.LabelFrame(top,text="Recording",padding=12); right=ttk.LabelFrame(top,text="Output, Target, Hotkeys",padding=12); left.grid(row=0,column=0,sticky="nsew",padx=(0,6)); right.grid(row=0,column=1,sticky="nsew",padx=(6,0))
         self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],2); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],3); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],4); self._entry(left,"Language","language",5); self._entry(left,"Initial Prompt","initial_prompt",6); self._entry(left,"Max Record Seconds","max_record_seconds",7); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",8); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",9)
         self._check(left,"Trim leading and trailing silence","trim_silence",10); self._check(left,"Normalize whitespace","normalize_whitespace",11); self._check(left,"Enable manual mode auto stop","enable_auto_stop",12); self._check(left,"Play feedback beeps","beep_feedback",13); self._check(left,"Keep window on top","keep_window_on_top",14)
@@ -530,24 +649,214 @@ class App:
         return True
     def _update_latest_transcript(self,text):
         self.last=text; self.txt.delete("1.0",tk.END); self.txt.insert("1.0",text); self.copy_clip(text)
+    def _copy_hotkeys(self)->tuple[str,...]:
+        return ("ctrl+c","ctrl+insert")
+    def _cut_hotkeys(self)->tuple[str,...]:
+        return ("ctrl+x","shift+delete")
+    def _paste_hotkey(self)->str:
+        return self.s.paste_hotkey or "ctrl+v"
+    def _should_safe_paste(self,info:WinInfo|None)->bool:
+        return bool(info and (info.proc in BROWSER_FALLBACK_PROCS or info.proc in WINDOWS_SEARCH_PROCS or info.proc in SYSTEM_INPUT_PROCS))
+    def _run_hotkey_sequence(self,*keys:str)->bool:
+        try: keyboard=self._keyboard()
+        except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return False
+        for key in keys:
+            keyboard.press_and_release(key)
+            time.sleep(0.05)
+        return True
+    def _with_restored_clipboard(self, text:str, action)->str:
+        original=get_clipboard_text()
+        set_clipboard_text(text)
+        time.sleep(0.05)
+        try:
+            return action()
+        finally:
+            time.sleep(0.03)
+            set_clipboard_text(original)
+    def _capture_selection_text(self, hotkeys:tuple[str,...], remove:bool=False)->str:
+        original=get_clipboard_text()
+        sentinel=f"__codex_capture__{time.time_ns()}__"
+        try:
+            for hotkey in hotkeys:
+                set_clipboard_text(sentinel)
+                time.sleep(0.03)
+                if not self._run_hotkey_sequence(hotkey):
+                    continue
+                for _ in range(16):
+                    time.sleep(0.05)
+                    captured=get_clipboard_text()
+                    if captured and captured != sentinel:
+                        return captured
+            return ""
+        finally:
+            set_clipboard_text(original)
+    def _store_internal_buffer(self,text:str,slot:int|None=None)->bool:
+        if not text:
+            return False
+        if slot is None:
+            self.internal_buffer=text
+            self.log("Voice command executed: copy to internal buffer")
+        else:
+            self.buffer_slots[slot]=text
+            self.log(f"Voice command executed: store slot {slot}")
+        return True
+    def _remember_output_payload(self,payload:str,sent_enter:bool=False):
+        self.last_emitted=payload
+        self.last_submitted=bool(sent_enter)
+        if sent_enter:
+            self.pending_text=""
+            self.pending_segments=[]
+        else:
+            self.pending_text=f"{self.pending_text}{payload}"
+            self.pending_segments.append(payload)
+    def _paste_text_via_clipboard(self,text:str)->bool:
+        if not text:
+            return False
+        try:
+            keyboard=self._keyboard()
+        except Exception as e:
+            self.log(f"Output hotkeys unavailable: {e}")
+            return False
+        original=get_clipboard_text()
+        try:
+            if not set_clipboard_text(text):
+                return False
+            time.sleep(0.05)
+            keyboard.press_and_release(self._paste_hotkey())
+            return True
+        finally:
+            time.sleep(0.03)
+            set_clipboard_text(original)
+    def _paste_payload(self,text:str)->bool:
+        if not text:
+            return False
+        self._update_latest_transcript(text)
+        if not self._paste_text_via_clipboard(text):
+            return False
+        self._remember_output_payload(text,sent_enter=False)
+        self.last_paste_payload=text
+        return True
+    def _remember_replace_state(self,kind:str,old_text:str,new_payload:str,old_segment:str="",old_pending:str="",old_segments:list[str]|None=None):
+        self.last_replace_state={
+            "kind":kind,
+            "old_text":old_text,
+            "new_payload":new_payload,
+            "old_segment":old_segment,
+            "old_pending":old_pending,
+            "old_segments":list(old_segments or []),
+        }
+    def _iter_slot_tokens(self,text:str):
+        raw=text.strip().lower()
+        compact=self._command_key(text)
+        for token,slot in SLOT_NUMBER_WORDS.items():
+            yield token,slot,raw,compact
+    def _parse_slot_command(self,text:str)->tuple[str,int]|None:
+        for token,slot,raw,compact in self._iter_slot_tokens(text):
+            if raw in {f"{token}번 복사",f"복사 {token}번"} or compact in {f"{token}번복사",f"복사{token}번"}:
+                return ("copy",slot)
+            if raw in {f"{token}번 잘라",f"{token}번 잘라내기",f"잘라 {token}번"} or compact in {f"{token}번잘라",f"{token}번잘라내기",f"잘라{token}번"}:
+                return ("cut",slot)
+            if raw in {f"{token}번 붙여넣기",f"{token}번 붙여 넣기",f"붙여넣기 {token}번",f"붙여 넣기 {token}번"} or compact in {f"{token}번붙여넣기",f"{token}번붙여넣기",f"붙여넣기{token}번"}:
+                return ("paste",slot)
+        return None
+    def copy_selection_to_buffer(self)->bool:
+        copied=self._capture_selection_text(self._copy_hotkeys())
+        if not copied:
+            self.log("Voice command ignored: no selected text copied")
+            return False
+        return self._store_internal_buffer(copied)
+    def copy_selection_to_slot(self,slot:int)->bool:
+        copied=self._capture_selection_text(self._copy_hotkeys())
+        if not copied:
+            self.log("Voice command ignored: no selected text copied")
+            return False
+        return self._store_internal_buffer(copied,slot)
+    def cut_selection_to_buffer(self)->bool:
+        cut_text=self._capture_selection_text(self._cut_hotkeys(), remove=True)
+        if not cut_text:
+            self.log("Voice command ignored: no selected text cut")
+            return False
+        return self._store_internal_buffer(cut_text)
+    def cut_selection_to_slot(self,slot:int)->bool:
+        cut_text=self._capture_selection_text(self._cut_hotkeys(), remove=True)
+        if not cut_text:
+            self.log("Voice command ignored: no selected text cut")
+            return False
+        return self._store_internal_buffer(cut_text,slot)
+    def paste_internal_buffer(self)->bool:
+        if not self.internal_buffer:
+            self.log("Voice command ignored: internal buffer is empty")
+            return False
+        ok=self._paste_payload(self.internal_buffer)
+        if ok:
+            self.log("Voice command executed: paste internal buffer")
+        return ok
+    def paste_slot_buffer(self,slot:int)->bool:
+        value=self.buffer_slots.get(slot,"")
+        if not value:
+            self.log(f"Voice command ignored: slot {slot} is empty")
+            return False
+        ok=self._paste_payload(value)
+        if ok:
+            self.log(f"Voice command executed: paste slot {slot}")
+        return ok
+    def undo_last_paste(self)->bool:
+        if not self.last_paste_payload:
+            self.log("Voice command ignored: no pasted text to undo")
+            return False
+        payload=self.last_paste_payload
+        if not self._run_hotkey_sequence("ctrl+z"):
+            return False
+        self.last_paste_payload=""
+        if self.pending_segments and self.pending_segments[-1]==payload:
+            self.pending_segments=self.pending_segments[:-1]
+            if self.pending_text.endswith(payload):
+                self.pending_text=self.pending_text[:-len(payload)]
+            self.last_emitted=self.pending_segments[-1] if self.pending_segments else ""
+        self.log("Voice command executed: undo last paste")
+        return True
+    def undo_last_replace(self)->bool:
+        state=self.last_replace_state
+        if not state:
+            self.log("Voice command ignored: no replacement to undo")
+            return False
+        new_payload=state.get("new_payload","")
+        if new_payload and not self._backspace_text(new_payload):
+            return False
+        old_text=state.get("old_text","")
+        old_segments=state.get("old_segments",[])
+        old_pending=state.get("old_pending","")
+        old_segment=state.get("old_segment","")
+        self.emit_text(old_text,remember=False,press_enter=False,append_space=False)
+        if state.get("kind")=="last":
+            self.pending_segments=old_segments
+            self.pending_text=old_pending
+            self.last_emitted=old_segment
+        self.last_replace_state=None
+        self.log("Voice command executed: undo last replace")
+        return True
     def emit_text(self,text,remember=True,press_enter:bool|None=None,append_space=True):
         try: import keyboard
         except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return
         sent_enter=self.s.auto_enter if press_enter is None else press_enter
-        payload=f"{text} " if text and append_space and not sent_enter else text
+        info=fg_info()
+        allow_space=append_space and has_precise_text_focus(info)
+        payload=f"{text} " if text and allow_space and not sent_enter else text
         if self.s.output_mode=="clipboard": self.log("Copied transcript to clipboard"); return
-        if self.s.output_mode=="type": keyboard.write(payload,delay=0)
-        else: time.sleep(0.05); keyboard.press_and_release(self.s.paste_hotkey)
+        if self.s.output_mode=="type" and not self._should_safe_paste(info):
+            keyboard.write(payload,delay=0)
+        else:
+            original=get_clipboard_text()
+            try:
+                set_clipboard_text(payload)
+                time.sleep(0.05)
+                keyboard.press_and_release(self._paste_hotkey())
+            finally:
+                time.sleep(0.03)
+                set_clipboard_text(original)
         if sent_enter: time.sleep(0.03); keyboard.press_and_release("enter")
         if remember:
-            self.last_emitted=payload
-            self.last_submitted=bool(sent_enter)
-            if sent_enter:
-                self.pending_text=""
-                self.pending_segments=[]
-            else:
-                self.pending_text=f"{self.pending_text}{payload}"
-                self.pending_segments.append(payload)
+            self._remember_output_payload(payload,sent_enter=sent_enter)
         self.log(f"Transcript sent via {self.s.output_mode}")
     def send_enter(self)->bool:
         try: keyboard=self._keyboard()
@@ -586,12 +895,24 @@ class App:
         if not self.pending_segments: self.log("Voice command ignored: no recent text to replace"); return False
         if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
         last_segment=self.pending_segments[-1]
+        old_pending=self.pending_text
+        old_segments=list(self.pending_segments)
         if not self._backspace_text(last_segment): return False
         self.pending_segments=self.pending_segments[:-1]
         if self.pending_text.endswith(last_segment): self.pending_text=self.pending_text[:-len(last_segment)]
         self._update_latest_transcript(text); self.emit_text(text,remember=True,press_enter=False,append_space=True)
+        self._remember_replace_state("last",last_segment,self.last_emitted,last_segment,old_pending,old_segments)
         self.log("Voice command executed: replace last emitted text")
         return True
+    def replace_selection_or_last(self,text:str)->bool:
+        selected=self._capture_selection_text(self._cut_hotkeys(), remove=True)
+        if selected:
+            self._update_latest_transcript(text)
+            self.emit_text(text,remember=False,press_enter=False,append_space=False)
+            self._remember_replace_state("selection",selected,text)
+            self.log("Voice command executed: replace current selection")
+            return True
+        return self.replace_last_emitted(text)
     def _command_key(self,text:str)->str:
         return "".join(ch for ch in text.strip().lower() if ch not in " \t\r\n.,!?;:\"'")
     def parse_correction(self,text:str)->str:
@@ -619,15 +940,41 @@ class App:
                 if compact==f"{key}{suffix}":
                     return value
         return 0
+    def is_voice_command_text(self,text:str)->bool:
+        key=self._command_key(text)
+        if not key:
+            return False
+        if self._parse_slot_command(text):
+            return True
+        if key in ENTER_COMMANDS or key in COPY_COMMANDS or key in CUT_COMMANDS or key in PASTE_COMMANDS:
+            return True
+        if key in PASTE_UNDO_COMMANDS or key in REPLACE_UNDO_COMMANDS or key in CLEAR_ALL_COMMANDS:
+            return True
+        if self.parse_delete_count(text):
+            return True
+        if self.parse_correction(text):
+            return True
+        return False
     def handle_voice_command(self,text:str)->bool:
         key=self._command_key(text)
         if not key: return False
+        slot_command=self._parse_slot_command(text)
+        if slot_command:
+            action,slot=slot_command
+            if action=="copy": return self.copy_selection_to_slot(slot)
+            if action=="cut": return self.cut_selection_to_slot(slot)
+            if action=="paste": return self.paste_slot_buffer(slot)
         if key in ENTER_COMMANDS: return self.send_enter()
+        if key in COPY_COMMANDS: return self.copy_selection_to_buffer()
+        if key in CUT_COMMANDS: return self.cut_selection_to_buffer()
+        if key in PASTE_COMMANDS: return self.paste_internal_buffer()
+        if key in PASTE_UNDO_COMMANDS: return self.undo_last_paste()
+        if key in REPLACE_UNDO_COMMANDS: return self.undo_last_replace()
         if key in CLEAR_ALL_COMMANDS: return self.clear_pending_input()
         delete_count=self.parse_delete_count(text)
         if delete_count: return self.undo_last_emitted(delete_count)
         replacement=self.parse_correction(text)
-        if replacement: return self.replace_last_emitted(replacement)
+        if replacement: return self.replace_selection_or_last(replacement)
         return False
     def copy_clip(self,text): self.root.clipboard_clear(); self.root.clipboard_append(text); self.root.update()
     def paste_last(self):
@@ -651,7 +998,10 @@ class App:
                 elif kind=="done":
                     self.busy=False; self.refresh_status()
                     if not p["text"]: self.beep("error"); self.log(f"No speech detected from {p['source']}"); self._next(); continue
-                    if self.handle_voice_command(p["text"]): self.beep("done"); self._next(); continue
+                    if self.is_voice_command_text(p["text"]):
+                        if self.handle_voice_command(p["text"]): self.beep("done")
+                        else: self.beep("error")
+                        self._next(); continue
                     self._update_latest_transcript(p["text"]); append_history(self.last,{"elapsed_seconds":round(float(p["elapsed"]),3),"audio_seconds":round(float(p["audio_seconds"]),3),"output_mode":self.s.output_mode,"source":p["source"]}); self.emit_text(self.last); self.beep("done"); self.log(f"Transcript ready from {p['source']} in {float(p['elapsed']):.2f}s for {float(p['audio_seconds']):.2f}s audio"); self._next()
                 elif kind=="error": self.busy=False; self.refresh_status(); self.beep("error"); self.log("Transcription failed"); self.log(p); self._next()
         except queue.Empty: pass
