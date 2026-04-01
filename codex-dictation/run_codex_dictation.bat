@@ -6,12 +6,12 @@ set "PYTHONW=%REPO_ROOT%.venv\Scripts\pythonw.exe"
 set "PYTHON=%REPO_ROOT%.venv\Scripts\python.exe"
 
 if exist "%PYTHONW%" (
-  start "" "%PYTHONW%" "%APP_DIR%codex_dictation.py"
+  start "" "%PYTHONW%" "%APP_DIR%codex_dictation.py" %*
   exit /b 0
 )
 
 if exist "%PYTHON%" (
-  start "" "%PYTHON%" "%APP_DIR%codex_dictation.py"
+  start "" "%PYTHON%" "%APP_DIR%codex_dictation.py" %*
   exit /b 0
 )
 

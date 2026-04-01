@@ -28,5 +28,10 @@
   "always_listen_preroll_seconds": 0.25,
   "voice_trigger_min_rms": 0.018,
   "voice_trigger_ratio": 2.2,
-  "voice_trigger_consecutive_blocks": 2
+  "voice_trigger_consecutive_blocks": 2,
+  "llm_correction_enabled": true,
+  "llm_profile": "balanced",
+  "llm_model": "gemma3:4b",
+  "llm_base_url": "http://127.0.0.1:11434",
+  "llm_timeout_seconds": 8.0
 }

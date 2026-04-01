@@ -10,6 +10,14 @@ dictationTitle := "Codex Dictation"
 dictationLauncher := projectDir "\run_codex_dictation.bat"
 dictationScript := projectDir "\codex_dictation.py"
 
+StartDictation(showWindow := false)
+{
+    global dictationLauncher, projectDir
+
+    args := showWindow ? " --show-window" : ""
+    Run Format('"{1}"{2}', dictationLauncher, args), projectDir
+}
+
 CanRestoreWindow(hwnd)
 {
     global dictationTitle
@@ -83,13 +91,12 @@ StartOrMinimizeDictation()
         return
     }
 
-    Run Format('"{1}"', dictationLauncher), projectDir
+    StartDictation(false)
     if WinWait(dictationTitle, , 8)
     {
         Sleep 800
         WinMinimize dictationTitle
     }
-    Sleep 150
     RestorePreviousWindow(previousHwnd)
 }
 
@@ -97,7 +104,7 @@ EnsureDictationRunning()
 {
     global dictationTitle
     if !WinExist(dictationTitle) && !IsDictationProcessRunning()
-        StartOrMinimizeDictation()
+        StartDictation(false)
 }
 
 $F1::
@@ -109,7 +116,17 @@ F2::
 {
     if WinExist(dictationTitle)
     {
-        WinShow
+        WinShow dictationTitle
+        try WinRestore(dictationTitle)
+        WinActivate dictationTitle
+        return
+    }
+
+    StartDictation(true)
+    if WinWait(dictationTitle, , 8)
+    {
+        WinShow dictationTitle
+        try WinRestore(dictationTitle)
         WinActivate dictationTitle
     }
 }
