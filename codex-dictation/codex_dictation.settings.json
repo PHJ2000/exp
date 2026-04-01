@@ -5,7 +5,7 @@
   "whisper_model": "large-v3-turbo",
   "whisper_device": "auto",
   "whisper_compute_type": "auto",
-  "language": "ko",
+  "language": "auto",
   "initial_prompt": "",
   "record_hotkey": "f8",
   "always_listen_hotkey": "f7",

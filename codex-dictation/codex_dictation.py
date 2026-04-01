@@ -36,7 +36,13 @@ REPLACE_UNDO_COMMANDS=_command_aliases("되돌려","교체 취소","바꾼 거 �
 CLEAR_ALL_COMMANDS=_command_aliases("다 지워","다 지어","다 치워","다 지워줘","다 치워줘","전부 지워","전부 지어","전부 치워","전체 지워","전체 지어","전체 치워","모두 지워","모두 지어","모두 치워","싹 지워","싹 지어","몽땅 지워")
 DELETE_SOUND_ALIASES=_command_aliases("지워","지어","치워","지워요","지어요","치워요","지워줘","지어줘","치워줘","지워줘요","치워줘요","지우","치우")
 CORRECTION_PREFIXES=("다시 말해줘 ", "다시말해줘 ", "다시 말해 ", "다시말해 ", "다시 해 ", "다시해 ", "다시 ", "다시, ")
-COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 다시 다시 말해 다시 말해줘 복사 붙여넣기 붙여 넣기 잘라 잘라내기 취소 되돌려"
+LANGUAGE_SWITCH_COMMANDS={
+    **{key:"auto" for key in _command_aliases("자동","자동으로","자동 감지","자동감지","오토")},
+    **{key:"ko" for key in _command_aliases("한국어","한국어로","한글","한글로")},
+    **{key:"en" for key in _command_aliases("영어","영어로","잉글리시")},
+}
+LANGUAGE_UI_LABELS={"auto":"자동","ko":"한국어","en":"영어"}
+COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 다시 다시 말해 다시 말해줘 복사 붙여넣기 붙여 넣기 잘라 잘라내기 취소 되돌려 자동 한국어 영어"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
 SLOT_NUMBER_WORDS={
@@ -67,7 +73,7 @@ DELETE_COUNT_WORDS={
 @dataclass
 class Settings:
     input_device:str=""; sample_rate:int=16000; channels:int=1; whisper_model:str="large-v3-turbo"; whisper_device:str="auto"; whisper_compute_type:str="auto"
-    language:str="ko"; initial_prompt:str=""; record_hotkey:str="f8"; always_listen_hotkey:str="f7"; paste_last_hotkey:str="f9"
+    language:str="auto"; initial_prompt:str=""; record_hotkey:str="f8"; always_listen_hotkey:str="f7"; paste_last_hotkey:str="f9"
     toggle_output_hotkey:str="f10"; toggle_enter_hotkey:str="f11"; output_mode:str="type"; paste_hotkey:str="ctrl+v"; auto_enter:bool=False
     trim_silence:bool=True; trim_threshold:float=0.008; normalize_whitespace:bool=True; max_record_seconds:int=45; min_record_seconds:float=0.25
     beep_feedback:bool=False; keep_window_on_top:bool=False; enable_auto_stop:bool=False; auto_stop_silence_seconds:float=0.65
@@ -110,11 +116,29 @@ def _configure_clipboard_api():
 
 _configure_clipboard_api()
 
+def normalize_language_value(value:str|None)->str:
+    raw=(value or "").strip().lower()
+    aliases={
+        "":"auto","auto":"auto","자동":"auto","자동으로":"auto","자동감지":"auto","자동 감지":"auto","오토":"auto",
+        "ko":"ko","kr":"ko","한국어":"ko","한국어로":"ko","한글":"ko","한글로":"ko","korean":"ko",
+        "en":"en","영어":"en","영어로":"en","english":"en","잉글리시":"en",
+    }
+    return aliases.get(raw,"auto")
+
+def language_label(value:str|None)->str:
+    return LANGUAGE_UI_LABELS.get(normalize_language_value(value),"자동")
+
+def language_model_arg(value:str|None)->str|None:
+    normalized=normalize_language_value(value)
+    return None if normalized=="auto" else normalized
+
 def load_settings()->Settings:
     if not SETTINGS_PATH.exists():
         s=Settings(); save_settings(s); return s
     data=json.loads(SETTINGS_PATH.read_text(encoding="utf-8")); ok={f.name for f in Settings.__dataclass_fields__.values()}
-    return Settings(**{k:v for k,v in data.items() if k in ok})
+    settings=Settings(**{k:v for k,v in data.items() if k in ok})
+    settings.language=normalize_language_value(settings.language)
+    return settings
 
 def save_settings(settings:Settings)->None: SETTINGS_PATH.write_text(json.dumps(asdict(settings),indent=2),encoding="utf-8")
 def append_app_log(msg:str)->None:
@@ -417,7 +441,7 @@ class WhisperBackend:
             if key not in self.cache: self.cache[key]=WhisperModel(s.whisper_model,device=device,compute_type=key[2])
             return self.cache[key]
     def transcribe(self,path:Path,s:Settings)->str:
-        segs,_=self._model(s).transcribe(path.as_posix(),language=(s.language or None),initial_prompt=initial_prompt_for_commands(s),vad_filter=True,beam_size=1,best_of=1,condition_on_previous_text=False)
+        segs,_=self._model(s).transcribe(path.as_posix(),language=language_model_arg(s.language),initial_prompt=initial_prompt_for_commands(s),vad_filter=True,beam_size=1,best_of=1,condition_on_previous_text=False)
         return " ".join(x.text.strip() for x in segs).strip()
 
 class Recorder:
@@ -471,7 +495,7 @@ class AlwaysListen:
 
 def doctor(settings:Settings|None=None)->str:
     lines=[f"{APP_NAME} doctor","-"*40,f"Python: {sys.version.split()[0]}",f"Settings: {SETTINGS_PATH}",f"History: {HISTORY_PATH}",f"Log: {LOG_PATH}"]
-    if settings: lines+= [f"Always listen enabled: {settings.always_listen_enabled}"]
+    if settings: lines+= [f"Always listen enabled: {settings.always_listen_enabled}",f"Language: {language_label(settings.language)} ({normalize_language_value(settings.language)})"]
     try:
         devs=get_input_devices(); lines.append(f"Input devices: {len(devs)}")
         for d in devs[:10]: lines.append(f"  - [{d['index']}] {d['name']} ({d['sample_rate']} Hz)")
@@ -501,15 +525,16 @@ class App:
         self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
         self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.pending_text=""; self.pending_segments=[]; self.last_target=None; self.t=None; self.startup_minimized=False
         self.internal_buffer=""; self.buffer_slots={i:"" for i in range(1,11)}; self.last_paste_payload=""; self.last_replace_state=None
-        self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","language","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
+        self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
+        self.vars["language"]=tk.StringVar(value=language_label(self.s.language))
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
         self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self.root.after(50,self.bootstrap_after_launch); self.root.after(80,self.poll); self.root.after(120,self.poll_record); self.root.after(150,self.poll_target)
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
-        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 다시 ..., 복사, 붙여넣기, 잘라, 취소, 되돌려").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
+        ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 다시 ..., 복사, 붙여넣기, 잘라, 취소, 되돌려, 자동/한국어/영어").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
         top=ttk.Frame(self.root,padding=(12,0,12,0)); top.grid(row=1,column=0,sticky="nsew"); top.columnconfigure((0,1),weight=1); left=ttk.LabelFrame(top,text="Recording",padding=12); right=ttk.LabelFrame(top,text="Output, Target, Hotkeys",padding=12); left.grid(row=0,column=0,sticky="nsew",padx=(0,6)); right.grid(row=0,column=1,sticky="nsew",padx=(6,0))
-        self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],2); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],3); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],4); self._entry(left,"Language","language",5); self._entry(left,"Initial Prompt","initial_prompt",6); self._entry(left,"Max Record Seconds","max_record_seconds",7); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",8); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",9)
+        self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],2); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],3); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],4); self._combo(left,"Language","language",["자동","한국어","영어"],5); self._entry(left,"Initial Prompt","initial_prompt",6); self._entry(left,"Max Record Seconds","max_record_seconds",7); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",8); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",9)
         self._check(left,"Trim leading and trailing silence","trim_silence",10); self._check(left,"Normalize whitespace","normalize_whitespace",11); self._check(left,"Enable manual mode auto stop","enable_auto_stop",12); self._check(left,"Play feedback beeps","beep_feedback",13); self._check(left,"Keep window on top","keep_window_on_top",14)
         self._combo(right,"Output Mode","output_mode",["paste","clipboard","type"],0); self._entry(right,"Paste Hotkey","paste_hotkey",1); self._check(right,"Press Enter after output","auto_enter",2); self._check(right,"Always listen when target input window is focused","always_listen_enabled",3); self._entry(right,"Always Listen Hotkey","always_listen_hotkey",4); self._entry(right,"Record Hotkey","record_hotkey",5); self._entry(right,"Paste Last Hotkey","paste_last_hotkey",6); self._entry(right,"Toggle Output Hotkey","toggle_output_hotkey",7); self._entry(right,"Toggle Enter Hotkey","toggle_enter_hotkey",8)
         btn=ttk.Frame(right); btn.grid(row=9,column=0,columnspan=2,sticky="ew",pady=(14,0)); [btn.columnconfigure(i,weight=1) for i in range(3)]
@@ -523,7 +548,7 @@ class App:
     def log(self,msg):
         append_app_log(msg)
         self.log_q.put(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-    def refresh_status(self,activity="Idle"): self.status.set(f"{activity} | {self.s.output_mode.upper()}{' + ENTER' if self.s.auto_enter else ''}{' | ALWAYS-ON' if self.listen.on else ''}")
+    def refresh_status(self,activity="Idle"): self.status.set(f"{activity} | {self.s.output_mode.upper()} | {language_label(self.s.language)}{' + ENTER' if self.s.auto_enter else ''}{' | ALWAYS-ON' if self.listen.on else ''}")
     def refresh_target(self): self.target.set("Target: focused terminal or input field")
     def bootstrap_after_launch(self):
         self.minimize_after_startup()
@@ -555,7 +580,10 @@ class App:
     def save_from_ui(self):
         for k,v in self.vars.items():
             cur=getattr(self.s,k); raw=v.get().strip()
-            if isinstance(cur,int): setattr(self.s,k,int(raw or "0"))
+            if k=="language":
+                setattr(self.s,k,normalize_language_value(raw))
+                self.vars["language"].set(language_label(self.s.language))
+            elif isinstance(cur,int): setattr(self.s,k,int(raw or "0"))
             elif isinstance(cur,float): setattr(self.s,k,float(raw or "0"))
             else: setattr(self.s,k,raw)
         for k,v in self.bools.items(): setattr(self.s,k,bool(v.get()))
@@ -915,6 +943,8 @@ class App:
         return self.replace_last_emitted(text)
     def _command_key(self,text:str)->str:
         return "".join(ch for ch in text.strip().lower() if ch not in " \t\r\n.,!?;:\"'")
+    def parse_language_switch(self,text:str)->str|None:
+        return LANGUAGE_SWITCH_COMMANDS.get(self._command_key(text))
     def parse_correction(self,text:str)->str:
         raw=text.strip()
         lowered=raw.lower()
@@ -922,6 +952,17 @@ class App:
             if lowered.startswith(prefix):
                 return raw[len(prefix):].strip(" \t\r\n.,!?;:\"'")
         return ""
+    def set_language_mode(self,language:str)->bool:
+        normalized=normalize_language_value(language)
+        if normalized==self.s.language:
+            self.log(f"Voice command ignored: language already set to {language_label(self.s.language)}")
+            return True
+        self.s.language=normalized
+        self.vars["language"].set(language_label(self.s.language))
+        save_settings(self.s)
+        self.refresh_status()
+        self.log(f"Voice command executed: language -> {language_label(self.s.language)}")
+        return True
     def parse_delete_count(self,text:str)->int:
         raw=text.strip().lower()
         compact=self._command_key(text)
@@ -950,6 +991,8 @@ class App:
             return True
         if key in PASTE_UNDO_COMMANDS or key in REPLACE_UNDO_COMMANDS or key in CLEAR_ALL_COMMANDS:
             return True
+        if self.parse_language_switch(text):
+            return True
         if self.parse_delete_count(text):
             return True
         if self.parse_correction(text):
@@ -971,6 +1014,8 @@ class App:
         if key in PASTE_UNDO_COMMANDS: return self.undo_last_paste()
         if key in REPLACE_UNDO_COMMANDS: return self.undo_last_replace()
         if key in CLEAR_ALL_COMMANDS: return self.clear_pending_input()
+        language=self.parse_language_switch(text)
+        if language: return self.set_language_mode(language)
         delete_count=self.parse_delete_count(text)
         if delete_count: return self.undo_last_emitted(delete_count)
         replacement=self.parse_correction(text)
@@ -1032,7 +1077,7 @@ class App:
 def main():
     p=argparse.ArgumentParser(description=APP_NAME); p.add_argument("--doctor",action="store_true"); p.add_argument("--transcribe-file",type=Path); p.add_argument("--model",type=str); p.add_argument("--language",type=str); a=p.parse_args(); s=load_settings()
     if a.model: s.whisper_model=a.model
-    if a.language is not None: s.language=a.language
+    if a.language is not None: s.language=normalize_language_value(a.language)
     if a.doctor: print(doctor(s)); return
     if a.transcribe_file: print(transcribe_file(a.transcribe_file,s)); return
     if not acquire_single_instance():
