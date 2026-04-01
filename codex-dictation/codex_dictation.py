@@ -1,8 +1,8 @@
 from __future__ import annotations
-import argparse, ctypes, json, os, queue, sys, tempfile, threading, time, traceback
+import argparse, ctypes, difflib, json, os, queue, sys, tempfile, threading, time, traceback, urllib.error, urllib.request
 from ctypes import wintypes
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 import numpy as np, sounddevice as sd, soundfile as sf, tkinter as tk
@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 
 APP_NAME="Codex Dictation"; ROOT=Path(__file__).resolve().parent; APP_PID=os.getpid()
 SETTINGS_PATH=ROOT/"codex_dictation.settings.json"; HISTORY_PATH=ROOT/"codex_dictation.history.jsonl"; LOG_PATH=ROOT/"codex_dictation.log"
+AI_PREFETCH_CACHE_SIZE=3
 TERMINALS={"windowsterminal.exe","wezterm-gui.exe","conhost.exe","powershell.exe","pwsh.exe","cmd.exe","mintty.exe","alacritty.exe","rio.exe","code.exe","cursor.exe"}
 EXCLUDED_TARGET_PROCS={"autohotkey64.exe","shellexperiencehost.exe","dwm.exe"}
 EXCLUDED_TARGET_CLASSES={"TkTopLevel","Shell_TrayWnd","Progman","WorkerW"}
@@ -42,6 +43,7 @@ ESCAPE_COMMANDS=_command_aliases("이스케이프","이스케이프 눌러","나
 PLAY_PAUSE_COMMANDS=_command_aliases("일시정지","일시 정지","재생","재생해","재생해줘","멈춰","멈춰줘","멈춤","플레이","플레이해","플레이 해")
 SEEK_FORWARD_COMMANDS=_command_aliases("앞으로 감기","앞으로감기","앞으로 감아","앞으로감아","앞으로 넘겨","앞으로넘겨")
 SEEK_BACKWARD_COMMANDS=_command_aliases("뒤로 감기","뒤로감기","뒤로 감아","뒤로감아","뒤로 넘겨","뒤로넘겨")
+AI_CORRECTION_COMMANDS=_command_aliases("정정","정정해","정정 해","교정","교정해","교정 해")
 DELETE_SOUND_ALIASES=_command_aliases("지워","지어","치워","지워요","지어요","치워요","지워줘","지어줘","치워줘","지워줘요","치워줘요","지우","치우")
 CORRECTION_PREFIXES=("다시 말해줘 ", "다시말해줘 ", "다시 말해 ", "다시말해 ", "다시 해 ", "다시해 ", "다시 ", "다시, ")
 LANGUAGE_SWITCH_COMMANDS={
@@ -50,9 +52,12 @@ LANGUAGE_SWITCH_COMMANDS={
     **{key:"en" for key in _command_aliases("영어","영어로","잉글리시")},
 }
 LANGUAGE_UI_LABELS={"auto":"자동","ko":"한국어","en":"영어"}
-COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 전체 비워 전부 비워 입력창 비워 다시 다시 말해 다시 말해줘 복사 붙여넣기 붙여 넣기 잘라 잘라내기 취소 되돌려 자동 한국어 영어 최대화 최소화 복원 이스케이프 나가기 일시정지 재생 앞으로 감기 뒤로 감기"
+LLM_PROFILE_MODELS={"balanced":"gemma3:4b","accurate":"gemma3:12b"}
+LLM_PROFILE_UI_LABELS={"balanced":"균형","accurate":"정확도","custom":"직접지정"}
+COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 전체 비워 전부 비워 입력창 비워 다시 다시 말해 다시 말해줘 정정 정정해 교정 복사 붙여넣기 붙여 넣기 잘라 잘라내기 취소 되돌려 자동 한국어 영어 최대화 최소화 복원 이스케이프 나가기 일시정지 재생 앞으로 감기 뒤로 감기"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
+DEFAULT_LLM_MODEL="gemma3:4b"
 SLOT_NUMBER_WORDS={
     "1":1,"일":1,"하나":1,"한":1,
     "2":2,"이":2,"둘":2,"두":2,
@@ -87,6 +92,7 @@ class Settings:
     beep_feedback:bool=False; keep_window_on_top:bool=False; enable_auto_stop:bool=False; auto_stop_silence_seconds:float=0.65
     always_listen_enabled:bool=True; always_listen_preroll_seconds:float=0.25
     voice_trigger_min_rms:float=0.018; voice_trigger_ratio:float=2.2; voice_trigger_consecutive_blocks:int=2
+    llm_correction_enabled:bool=False; llm_profile:str="balanced"; llm_model:str=DEFAULT_LLM_MODEL; llm_base_url:str="http://127.0.0.1:11434"; llm_timeout_seconds:float=8.0
 
 @dataclass
 class WinInfo:
@@ -95,6 +101,25 @@ class WinInfo:
 @dataclass
 class FocusInfo:
     focus_hwnd:int; focus_cls:str; caret_hwnd:int; caret_cls:str; caret_visible:bool
+
+@dataclass
+class CorrectionTarget:
+    kind:str
+    source_text:str
+
+@dataclass
+class AICorrectionPrefetchEntry:
+    source_text:str=""
+    corrected_text:str=""
+    signature:tuple[str,str,str,bool]=("", "", "", False)
+    outcome:str="corrected"
+
+@dataclass
+class AICorrectionPrefetchState:
+    entries:list[AICorrectionPrefetchEntry]=field(default_factory=list)
+    active_source_text:str=""
+    in_flight:bool=False
+    job_id:int=0
 
 CF_UNICODETEXT=13
 GMEM_MOVEABLE=0x0002
@@ -141,12 +166,285 @@ def language_model_arg(value:str|None)->str|None:
     normalized=normalize_language_value(value)
     return None if normalized=="auto" else normalized
 
+def normalize_llm_profile_value(value:str|None)->str:
+    raw=(value or "").strip().lower()
+    aliases={
+        "balanced":"balanced","균형":"balanced",
+        "accurate":"accurate","정확도":"accurate",
+        "custom":"custom","직접지정":"custom","직접 지정":"custom",
+    }
+    return aliases.get(raw,"balanced")
+
+def llm_profile_label(value:str|None)->str:
+    return LLM_PROFILE_UI_LABELS.get(normalize_llm_profile_value(value),"균형")
+
+def resolve_llm_model(settings:Settings)->str:
+    profile=normalize_llm_profile_value(settings.llm_profile)
+    if profile in LLM_PROFILE_MODELS:
+        return LLM_PROFILE_MODELS[profile]
+    custom=(settings.llm_model or "").strip()
+    return custom or DEFAULT_LLM_MODEL
+
+def command_key(text:str)->str:
+    return "".join(ch for ch in text.strip().lower() if ch not in " \t\r\n.,!?;:\"'")
+
+def parse_language_switch_text(text:str)->str|None:
+    return LANGUAGE_SWITCH_COMMANDS.get(command_key(text))
+
+def parse_correction_text(text:str)->str:
+    raw=text.strip()
+    lowered=raw.lower()
+    for prefix in CORRECTION_PREFIXES:
+        if lowered.startswith(prefix):
+            return raw[len(prefix):].strip(" \t\r\n.,!?;:\"'")
+    return ""
+
+def parse_slot_command_text(text:str)->tuple[str,int]|None:
+    raw=text.strip().lower()
+    compact=command_key(text)
+    for token,slot in SLOT_NUMBER_WORDS.items():
+        if raw in {f"{token}번 복사",f"복사 {token}번"} or compact in {f"{token}번복사",f"복사{token}번"}:
+            return ("copy",slot)
+        if raw in {f"{token}번 잘라",f"{token}번 잘라내기",f"잘라 {token}번"} or compact in {f"{token}번잘라",f"{token}번잘라내기",f"잘라{token}번"}:
+            return ("cut",slot)
+        if raw in {f"{token}번 붙여넣기",f"{token}번 붙여 넣기",f"붙여넣기 {token}번",f"붙여 넣기 {token}번"} or compact in {f"{token}번붙여넣기",f"붙여넣기{token}번"}:
+            return ("paste",slot)
+    return None
+
+def parse_media_command_text(text:str)->tuple[str,int]|None:
+    raw=text.strip().lower()
+    compact=command_key(text)
+    if compact in ESCAPE_COMMANDS:
+        return ("escape",1)
+    if compact in PLAY_PAUSE_COMMANDS:
+        return ("play_pause",1)
+    if compact in SEEK_FORWARD_COMMANDS:
+        return ("forward",1)
+    if compact in SEEK_BACKWARD_COMMANDS:
+        return ("backward",1)
+    for token,count in SLOT_NUMBER_WORDS.items():
+        raw_patterns=(
+            f"{token}번 앞으로 감기", f"{token} 번 앞으로 감기", f"앞으로 감기 {token}번", f"앞으로 감기 {token} 번",
+            f"{token}번 앞으로 감아", f"{token} 번 앞으로 감아", f"앞으로 감아 {token}번", f"앞으로 감아 {token} 번",
+            f"{token}번 뒤로 감기", f"{token} 번 뒤로 감기", f"뒤로 감기 {token}번", f"뒤로 감기 {token} 번",
+            f"{token}번 뒤로 감아", f"{token} 번 뒤로 감아", f"뒤로 감아 {token}번", f"뒤로 감아 {token} 번",
+        )
+        compact_patterns=(
+            f"{token}번앞으로감기", f"앞으로감기{token}번", f"{token}번앞으로감아", f"앞으로감아{token}번",
+            f"{token}번뒤로감기", f"뒤로감기{token}번", f"{token}번뒤로감아", f"뒤로감아{token}번",
+        )
+        if raw in raw_patterns or compact in compact_patterns:
+            if "뒤로" in raw or "뒤로" in compact:
+                return ("backward",count)
+            return ("forward",count)
+    return None
+
+def parse_delete_count_text(text:str)->int:
+    raw=text.strip().lower()
+    compact=command_key(text)
+    if compact in DELETE_SOUND_ALIASES:
+        return 1
+    for suffix in ("번지워","번지어","번치워","개지워","개지어","개치워"):
+        if compact.endswith(suffix):
+            count_text=compact[:-len(suffix)]
+            if count_text.isdigit():
+                return max(1,int(count_text))
+    for key,value in DELETE_COUNT_WORDS.items():
+        for suffix in (" 번 지워"," 번 지어"," 번 치워","개 지워","개 지어","개 치워","번만 지워","번만 지어","번만 치워"):
+            if raw==f"{key}{suffix}":
+                return value
+        for suffix in ("번지워","번지어","번치워","개지워","개지어","개치워","번만지워","번만지어","번만치워"):
+            if compact==f"{key}{suffix}":
+                return value
+    return 0
+
+def is_voice_command_text(text:str)->bool:
+    key=command_key(text)
+    if not key:
+        return False
+    if parse_slot_command_text(text):
+        return True
+    if key in ENTER_COMMANDS or key in COPY_COMMANDS or key in CUT_COMMANDS or key in PASTE_COMMANDS:
+        return True
+    if key in PASTE_UNDO_COMMANDS or key in REPLACE_UNDO_COMMANDS or key in CLEAR_FOCUSED_INPUT_COMMANDS or key in CLEAR_ALL_COMMANDS:
+        return True
+    if key in AI_CORRECTION_COMMANDS:
+        return True
+    if key in WINDOW_MAXIMIZE_COMMANDS or key in WINDOW_MINIMIZE_COMMANDS or key in WINDOW_RESTORE_COMMANDS:
+        return True
+    if parse_language_switch_text(text):
+        return True
+    if parse_media_command_text(text):
+        return True
+    if parse_delete_count_text(text):
+        return True
+    if parse_correction_text(text):
+        return True
+    return False
+
+def conservative_postedit_prompt(text:str, language:str, strict:bool=False)->str:
+    lang_note={
+        "auto":"입력 언어는 한국어 또는 영어일 수 있습니다.",
+        "ko":"입력 언어는 한국어입니다.",
+        "en":"입력 언어는 영어입니다.",
+    }.get(normalize_language_value(language),"입력 언어는 한국어 또는 영어일 수 있습니다.")
+    strict_note=(
+        "- 원문의 단어 순서와 문장 수를 최대한 유지합니다.\n"
+        "- 새 단어를 덧붙이거나 설명을 쓰지 않습니다.\n"
+        "- 확신이 없으면 한 글자도 바꾸지 않습니다.\n"
+    ) if strict else ""
+    return (
+        "당신은 STT 후처리 교정기입니다.\n"
+        f"{lang_note}\n"
+        "아래 원문을 보수적으로만 교정하세요.\n"
+        "규칙:\n"
+        "- 띄어쓰기, 조사, 문장 부호, 명백한 오인식만 고칩니다.\n"
+        "- 뜻을 추정해서 새 내용을 추가하지 않습니다.\n"
+        "- 문장 수를 늘리지 않습니다.\n"
+        "- 요약하거나 재서술하지 않습니다.\n"
+        "- 확신이 없으면 원문을 유지합니다.\n"
+        f"{strict_note}"
+        "- 설명 없이 교정 결과만 한 줄로 출력합니다.\n\n"
+        f"원문:\n{text}\n"
+    )
+
+def _clean_postedit_output(text:str)->str:
+    cleaned=(text or "").strip()
+    if "</think>" in cleaned:
+        cleaned=cleaned.split("</think>",1)[-1].strip()
+    if cleaned.lower().startswith("<think>"):
+        cleaned=cleaned.rsplit("</think>",1)[-1].strip() if "</think>" in cleaned else ""
+    cleaned=cleaned.replace("```","").strip()
+    for prefix in ("교정 결과:", "결과:", "수정:", "output:"):
+        if cleaned.lower().startswith(prefix.lower()):
+            cleaned=cleaned.split(":",1)[1].strip()
+    cleaned=cleaned.splitlines()[0].strip() if cleaned.splitlines() else cleaned
+    if len(cleaned)>=2 and cleaned[0]==cleaned[-1] and cleaned[0] in {"'","\""}:
+        cleaned=cleaned[1:-1].strip()
+    return cleaned
+
+def short_log_text(text:str, limit:int=80)->str:
+    compact=" ".join((text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit-3] + "..."
+
+def _postedit_compare_key(text:str)->str:
+    return "".join(ch for ch in (text or "").lower() if ch.isalnum())
+
+def should_accept_postedit(original:str, corrected:str)->bool:
+    original_norm=normalize_text(original or "")
+    corrected_norm=normalize_text(corrected or "")
+    if not original_norm or not corrected_norm:
+        return False
+    if original_norm==corrected_norm:
+        return True
+    if "\n" in corrected_norm:
+        return False
+    original_key=_postedit_compare_key(original_norm)
+    corrected_key=_postedit_compare_key(corrected_norm)
+    ratio=difflib.SequenceMatcher(a=original_norm,b=corrected_norm).ratio()
+    key_ratio=difflib.SequenceMatcher(a=original_key,b=corrected_key).ratio() if original_key and corrected_key else ratio
+    if original_key and corrected_key and original_key==corrected_key:
+        return True
+    if ratio >= 0.85 and key_ratio >= 0.90:
+        return True
+    original_sentences=sum(original_norm.count(ch) for ch in ".!?")
+    corrected_sentences=sum(corrected_norm.count(ch) for ch in ".!?")
+    if corrected_sentences > original_sentences + 1:
+        return False
+    if ratio < 0.75 and key_ratio < 0.82:
+        return False
+    if len(corrected_norm) > max(len(original_norm)*2, len(original_norm)+24):
+        return False
+    if len(corrected_norm) < max(1, int(len(original_norm)*0.4)):
+        return False
+    if key_ratio < 0.68:
+        return False
+    return True
+
+def postedit_similarity_metrics(original:str, corrected:str)->tuple[float,float]:
+    original_norm=normalize_text(original or "")
+    corrected_norm=normalize_text(corrected or "")
+    ratio=difflib.SequenceMatcher(a=original_norm,b=corrected_norm).ratio()
+    original_key=_postedit_compare_key(original_norm)
+    corrected_key=_postedit_compare_key(corrected_norm)
+    key_ratio=difflib.SequenceMatcher(a=original_key,b=corrected_key).ratio() if original_key and corrected_key else ratio
+    return ratio, key_ratio
+
+class OllamaPostEditor:
+    def __init__(self, logger):
+        self.log=logger
+    def _request(self,prompt:str,settings:Settings,trace_id:str|None=None)->str:
+        trace_prefix=f"{trace_id} | " if trace_id else ""
+        base_url=(settings.llm_base_url or "").strip().rstrip("/")
+        if not base_url:
+            self.log(f"{trace_prefix}LLM 교정 건너뜀: base URL 비어 있음")
+            return ""
+        payload={
+            "model":resolve_llm_model(settings),
+            "prompt":prompt,
+            "stream":False,
+            "options":{"temperature":0,"top_p":0.05,"num_predict":128,"repeat_penalty":1.2},
+        }
+        body=json.dumps(payload,ensure_ascii=False).encode("utf-8")
+        req=urllib.request.Request(
+            f"{base_url}/api/generate",
+            data=body,
+            headers={"Content-Type":"application/json"},
+            method="POST",
+        )
+        timeout=max(float(settings.llm_timeout_seconds or 0), 0.5)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data=json.loads(resp.read().decode("utf-8"))
+        except urllib.error.URLError as e:
+            self.log(f"{trace_prefix}LLM 교정 건너뜀: {e}")
+            return ""
+        except Exception as e:
+            self.log(f"{trace_prefix}LLM 교정 실패: {e}")
+            return ""
+        return _clean_postedit_output(data.get("response",""))
+    def correct(self,text:str,settings:Settings,trace_id:str|None=None)->str:
+        if not settings.llm_correction_enabled:
+            return text
+        source=(text or "").strip()
+        if not source:
+            return text
+        started=time.perf_counter()
+        trace_prefix=f"{trace_id} | " if trace_id else ""
+        self.log(f"{trace_prefix}LLM 요청 시작")
+        corrected=self._request(conservative_postedit_prompt(source, settings.language),settings,trace_id=trace_id)
+        if not corrected:
+            self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s, empty)")
+            self.log(f"{trace_prefix}LLM 빈 응답 -> 원문 유지")
+            return text
+        if not should_accept_postedit(source, corrected):
+            self.log(f"{trace_prefix}1차 결과 거부 -> 보수 프롬프트 재시도")
+            retry=self._request(conservative_postedit_prompt(source, settings.language, strict=True),settings,trace_id=trace_id)
+            if retry and should_accept_postedit(source,retry):
+                corrected=retry
+                self.log(f"{trace_prefix}재시도 결과 채택")
+            else:
+                ratio, key_ratio=postedit_similarity_metrics(source, retry or corrected or source)
+                self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s, rejected)")
+                self.log(f"{trace_prefix}결과 거부: diff too large (ratio={ratio:.3f}, key_ratio={key_ratio:.3f}) -> 원문 유지")
+                return text
+        if normalize_text(corrected)==normalize_text(source):
+            self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s, same)")
+            self.log(f"{trace_prefix}결과 동일 -> 원문 유지")
+            return text
+        self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s)")
+        self.log(f"{trace_prefix}LLM 결과 채택")
+        return corrected
+
 def load_settings()->Settings:
     if not SETTINGS_PATH.exists():
         s=Settings(); save_settings(s); return s
     data=json.loads(SETTINGS_PATH.read_text(encoding="utf-8")); ok={f.name for f in Settings.__dataclass_fields__.values()}
     settings=Settings(**{k:v for k,v in data.items() if k in ok})
     settings.language=normalize_language_value(settings.language)
+    settings.llm_profile=normalize_llm_profile_value(settings.llm_profile)
     return settings
 
 def save_settings(settings:Settings)->None: SETTINGS_PATH.write_text(json.dumps(asdict(settings),indent=2),encoding="utf-8")
@@ -555,7 +853,7 @@ class AlwaysListen:
 
 def doctor(settings:Settings|None=None)->str:
     lines=[f"{APP_NAME} doctor","-"*40,f"Python: {sys.version.split()[0]}",f"Settings: {SETTINGS_PATH}",f"History: {HISTORY_PATH}",f"Log: {LOG_PATH}"]
-    if settings: lines+= [f"Always listen enabled: {settings.always_listen_enabled}",f"Language: {language_label(settings.language)} ({normalize_language_value(settings.language)})"]
+    if settings: lines+= [f"Always listen enabled: {settings.always_listen_enabled}",f"Language: {language_label(settings.language)} ({normalize_language_value(settings.language)})",f"LLM correction enabled: {settings.llm_correction_enabled}",f"LLM profile: {llm_profile_label(settings.llm_profile)} ({normalize_llm_profile_value(settings.llm_profile)})",f"LLM model: {resolve_llm_model(settings)}",f"LLM base URL: {settings.llm_base_url}"]
     try:
         devs=get_input_devices(); lines.append(f"Input devices: {len(devs)}")
         for d in devs[:10]: lines.append(f"  - [{d['index']}] {d['name']} ({d['sample_rate']} Hz)")
@@ -573,31 +871,38 @@ def doctor(settings:Settings|None=None)->str:
     return "\n".join(lines)
 
 def transcribe_file(file_path:Path,settings:Settings)->str:
-    text=WhisperBackend().transcribe(file_path,settings); return normalize_text(text) if settings.normalize_whitespace else text
+    text=WhisperBackend().transcribe(file_path,settings)
+    text=normalize_text(text) if settings.normalize_whitespace else text
+    return text
 
 class App:
-    def __init__(self,root:tk.Tk,launch_target:WinInfo|None=None):
+    def __init__(self,root:tk.Tk,launch_target:WinInfo|None=None,show_window:bool=False):
         self.root=root; self.root.title(APP_NAME); self.root.geometry("980x780"); self.root.protocol("WM_DELETE_WINDOW",self.close)
         self.launch_target=launch_target
+        self.show_window=show_window
         self.s=load_settings()
         if not self.s.input_device: self.s.input_device = default_input_device_name()
         save_settings(self.s)
-        self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
+        self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.posteditor=OllamaPostEditor(self.log); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
         self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.pending_text=""; self.pending_segments=[]; self.last_target=None; self.t=None; self.startup_minimized=False
         self.internal_buffer=""; self.buffer_slots={i:"" for i in range(1,11)}; self.last_paste_payload=""; self.last_replace_state=None
-        self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds"]}
+        self.ai_correction_seq=0
+        self.ai_prefetch_lock=threading.Lock()
+        self.ai_prefetch=AICorrectionPrefetchState()
+        self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds","llm_model","llm_base_url","llm_timeout_seconds"]}
         self.vars["language"]=tk.StringVar(value=language_label(self.s.language))
-        self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled"]}
+        self.vars["llm_profile"]=tk.StringVar(value=llm_profile_label(self.s.llm_profile))
+        self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled","llm_correction_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
-        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self.root.after(50,self.bootstrap_after_launch); self.root.after(80,self.poll); self.root.after(120,self.poll_record); self.root.after(150,self.poll_target)
+        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self.root.after(20,self.ensure_window_visible_on_startup); self.root.after(50,self.bootstrap_after_launch); self.root.after(80,self.poll); self.root.after(120,self.poll_record); self.root.after(150,self.poll_target)
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
         ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 전체 비워, 다시 ..., 복사, 붙여넣기, 잘라, 취소, 되돌려, 자동/한국어/영어, 최대화/최소화/복원, 이스케이프/나가기, 일시정지/재생, 앞으로/뒤로 감기").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
         top=ttk.Frame(self.root,padding=(12,0,12,0)); top.grid(row=1,column=0,sticky="nsew"); top.columnconfigure((0,1),weight=1); left=ttk.LabelFrame(top,text="Recording",padding=12); right=ttk.LabelFrame(top,text="Output, Target, Hotkeys",padding=12); left.grid(row=0,column=0,sticky="nsew",padx=(0,6)); right.grid(row=0,column=1,sticky="nsew",padx=(6,0))
         self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],2); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],3); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],4); self._combo(left,"Language","language",["자동","한국어","영어"],5); self._entry(left,"Initial Prompt","initial_prompt",6); self._entry(left,"Max Record Seconds","max_record_seconds",7); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",8); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",9)
         self._check(left,"Trim leading and trailing silence","trim_silence",10); self._check(left,"Normalize whitespace","normalize_whitespace",11); self._check(left,"Enable manual mode auto stop","enable_auto_stop",12); self._check(left,"Play feedback beeps","beep_feedback",13); self._check(left,"Keep window on top","keep_window_on_top",14)
-        self._combo(right,"Output Mode","output_mode",["paste","clipboard","type"],0); self._entry(right,"Paste Hotkey","paste_hotkey",1); self._check(right,"Press Enter after output","auto_enter",2); self._check(right,"Always listen when target input window is focused","always_listen_enabled",3); self._entry(right,"Always Listen Hotkey","always_listen_hotkey",4); self._entry(right,"Record Hotkey","record_hotkey",5); self._entry(right,"Paste Last Hotkey","paste_last_hotkey",6); self._entry(right,"Toggle Output Hotkey","toggle_output_hotkey",7); self._entry(right,"Toggle Enter Hotkey","toggle_enter_hotkey",8)
-        btn=ttk.Frame(right); btn.grid(row=9,column=0,columnspan=2,sticky="ew",pady=(14,0)); [btn.columnconfigure(i,weight=1) for i in range(3)]
+        self._combo(right,"Output Mode","output_mode",["paste","clipboard","type"],0); self._entry(right,"Paste Hotkey","paste_hotkey",1); self._check(right,"Press Enter after output","auto_enter",2); self._check(right,"Always listen when target input window is focused","always_listen_enabled",3); self._entry(right,"Always Listen Hotkey","always_listen_hotkey",4); self._entry(right,"Record Hotkey","record_hotkey",5); self._entry(right,"Paste Last Hotkey","paste_last_hotkey",6); self._entry(right,"Toggle Output Hotkey","toggle_output_hotkey",7); self._entry(right,"Toggle Enter Hotkey","toggle_enter_hotkey",8); self._check(right,"Enable local LLM correction command","llm_correction_enabled",9); self._combo(right,"LLM Profile","llm_profile",["균형","정확도","직접지정"],10); self._entry(right,"LLM Model","llm_model",11); self._entry(right,"LLM Base URL","llm_base_url",12); self._entry(right,"LLM Timeout Seconds","llm_timeout_seconds",13)
+        btn=ttk.Frame(right); btn.grid(row=13,column=0,columnspan=2,sticky="ew",pady=(14,0)); [btn.columnconfigure(i,weight=1) for i in range(3)]
         for r,c,text,cmd in [(0,0,"Start / Stop Manual",self.toggle_recording),(0,1,"Toggle Always Listen",self.toggle_always_listen),(0,2,"Paste Last",self.paste_last),(1,0,"Save Settings",self.save_from_ui),(1,1,"Doctor",self.show_doctor),(1,2,"Refresh Hotkeys",self.register_hotkeys),(2,0,"Copy Last",self.copy_last)]:
             ttk.Button(btn,text=text,command=cmd).grid(row=r,column=c,sticky="ew",padx=6 if c==1 else (0 if c==0 else 6),pady=(8 if r else 0,0))
         tf=ttk.LabelFrame(self.root,text="Latest Transcript",padding=12); tf.grid(row=2,column=0,sticky="nsew",padx=12,pady=(12,6)); tf.columnconfigure(0,weight=1); self.txt=tk.Text(tf,wrap="word",height=8,font=("Segoe UI",10)); self.txt.grid(row=0,column=0,sticky="nsew")
@@ -608,7 +913,115 @@ class App:
     def log(self,msg):
         append_app_log(msg)
         self.log_q.put(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-    def refresh_status(self,activity="Idle"): self.status.set(f"{activity} | {self.s.output_mode.upper()} | {language_label(self.s.language)}{' + ENTER' if self.s.auto_enter else ''}{' | ALWAYS-ON' if self.listen.on else ''}")
+    def next_ai_correction_trace(self)->str:
+        self.ai_correction_seq += 1
+        return f"AI-CORR-{self.ai_correction_seq:04d}"
+    def _invalidate_ai_prefetch(self, clear_ready:bool=True):
+        with self.ai_prefetch_lock:
+            entries=[] if clear_ready else list(self.ai_prefetch.entries)
+            self.ai_prefetch=AICorrectionPrefetchState(entries=entries,job_id=self.ai_prefetch.job_id)
+    def _consume_ai_prefetch(self, source_text:str)->tuple[str,str]:
+        source_key=normalize_text(source_text)
+        current_signature=self._prefetch_model_signature()
+        with self.ai_prefetch_lock:
+            for idx in range(len(self.ai_prefetch.entries)-1,-1,-1):
+                entry=self.ai_prefetch.entries[idx]
+                if entry.signature!=current_signature:
+                    continue
+                if normalize_text(entry.source_text)!=source_key:
+                    continue
+                corrected=entry.corrected_text
+                outcome=entry.outcome
+                del self.ai_prefetch.entries[idx]
+                return outcome, corrected
+        return "", ""
+    def _await_ai_prefetch(self, source_text:str, timeout_seconds:float)->tuple[str,str]:
+        source_key=normalize_text(source_text)
+        current_signature=self._prefetch_model_signature()
+        deadline=time.time()+max(0.0,timeout_seconds)
+        while time.time() <= deadline:
+            with self.ai_prefetch_lock:
+                for idx in range(len(self.ai_prefetch.entries)-1,-1,-1):
+                    entry=self.ai_prefetch.entries[idx]
+                    if entry.signature!=current_signature:
+                        continue
+                    if normalize_text(entry.source_text)!=source_key:
+                        continue
+                    corrected=entry.corrected_text
+                    outcome=entry.outcome
+                    del self.ai_prefetch.entries[idx]
+                    return outcome, corrected
+                same_in_flight=(
+                    self.ai_prefetch.in_flight
+                    and normalize_text(self.ai_prefetch.active_source_text)==source_key
+                )
+            if not same_in_flight:
+                return "", ""
+            time.sleep(0.05)
+        return "", ""
+    def _prefetch_model_signature(self)->tuple[str,str,str,bool]:
+        return (
+            normalize_language_value(self.s.language),
+            normalize_llm_profile_value(self.s.llm_profile),
+            resolve_llm_model(self.s),
+            bool(self.s.llm_correction_enabled),
+        )
+    def _schedule_ai_prefetch_for_pending(self):
+        if not self.s.llm_correction_enabled or self.last_submitted:
+            self._invalidate_ai_prefetch()
+            return
+        source=self.pending_text.strip()
+        if not source:
+            self._invalidate_ai_prefetch()
+            return
+        signature=self._prefetch_model_signature()
+        with self.ai_prefetch_lock:
+            current=self.ai_prefetch
+            source_key=normalize_text(source)
+            if any(entry.signature==signature and normalize_text(entry.source_text)==source_key for entry in current.entries):
+                return
+            if normalize_text(current.active_source_text)==source_key and current.in_flight:
+                return
+            job_id=current.job_id+1
+            self.ai_prefetch=AICorrectionPrefetchState(entries=list(current.entries),active_source_text=source,in_flight=True,job_id=job_id)
+        thread=threading.Thread(target=self._ai_prefetch_worker,args=(job_id,source,signature),daemon=True)
+        thread.start()
+    def _ai_prefetch_worker(self, job_id:int, source_text:str, signature:tuple[str,str,str,bool]):
+        trace_id=f"AI-PREFETCH-{job_id:04d}"
+        self.log(f"{trace_id} | 정정 후보 생성 시작")
+        corrected=self.posteditor.correct(source_text,self.s,trace_id=trace_id).strip()
+        with self.ai_prefetch_lock:
+            current=self.ai_prefetch
+            if current.job_id!=job_id:
+                self.log(f"{trace_id} | 최신 작업이 아니어서 정정 후보 폐기")
+                return
+            current_signature=self._prefetch_model_signature()
+            if current_signature!=signature or normalize_text(current.active_source_text)!=normalize_text(source_text):
+                self.ai_prefetch=AICorrectionPrefetchState(entries=list(current.entries),job_id=current.job_id)
+                self.log(f"{trace_id} | 정정 후보 무효화")
+                return
+            if corrected and normalize_text(corrected)!=normalize_text(source_text):
+                entries=[
+                    entry for entry in current.entries
+                    if not (entry.signature==signature and normalize_text(entry.source_text)==normalize_text(source_text))
+                ]
+                entries.append(AICorrectionPrefetchEntry(source_text=source_text,corrected_text=corrected,signature=signature,outcome="corrected"))
+                entries=entries[-AI_PREFETCH_CACHE_SIZE:]
+                self.ai_prefetch=AICorrectionPrefetchState(entries=entries,job_id=job_id)
+                self.log(f"{trace_id} | 정정 후보 저장 완료")
+            elif corrected and normalize_text(corrected)==normalize_text(source_text):
+                entries=[
+                    entry for entry in current.entries
+                    if not (entry.signature==signature and normalize_text(entry.source_text)==normalize_text(source_text))
+                ]
+                entries.append(AICorrectionPrefetchEntry(source_text=source_text,corrected_text=source_text,signature=signature,outcome="same"))
+                entries=entries[-AI_PREFETCH_CACHE_SIZE:]
+                self.ai_prefetch=AICorrectionPrefetchState(entries=entries,job_id=job_id)
+                self.log(f"{trace_id} | 정정 후보 저장 완료 (same)")
+            else:
+                self.ai_prefetch=AICorrectionPrefetchState(entries=list(current.entries),job_id=job_id)
+                self.log(f"{trace_id} | 정정 후보 없음")
+    def refresh_status(self,activity="Idle"): self.status.set(f"{activity} | {self.s.output_mode.upper()} | {language_label(self.s.language)}{' | LLM '+llm_profile_label(self.s.llm_profile) if self.s.llm_correction_enabled else ''}{' + ENTER' if self.s.auto_enter else ''}{' | ALWAYS-ON' if self.listen.on else ''}")
     def refresh_target(self): self.target.set("Target: focused terminal or input field")
     def bootstrap_after_launch(self):
         self.minimize_after_startup()
@@ -619,15 +1032,25 @@ class App:
         self.sync_listener()
         self.log("Ready")
     def minimize_after_startup(self):
-        if self.startup_minimized: return
-        self.startup_minimized=True
+        self.log("Startup minimize skipped")
+        return
+    def ensure_window_visible_on_startup(self):
+        if not self.show_window:
+            return
         try:
-            self.root.iconify()
-            self.log("Window minimized after startup")
+            self.root.deiconify()
+            self.root.state("normal")
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+            self.root.focus_force()
+            self.root.after(250, lambda: self.root.attributes("-topmost", self.s.keep_window_on_top))
+            self.log("Startup window shown")
         except Exception as e:
-            self.log(f"Startup minimize skipped: {e}")
+            self.log(f"Startup window show failed: {e}")
     def restore_launch_target_after_startup(self):
         try:
+            if self.show_window:
+                return
             if self.target_active():
                 return
             if self.launch_target and self.launch_target.pid!=APP_PID and focus_window(self.launch_target.hwnd):
@@ -643,6 +1066,9 @@ class App:
             if k=="language":
                 setattr(self.s,k,normalize_language_value(raw))
                 self.vars["language"].set(language_label(self.s.language))
+            elif k=="llm_profile":
+                setattr(self.s,k,normalize_llm_profile_value(raw))
+                self.vars["llm_profile"].set(llm_profile_label(self.s.llm_profile))
             elif isinstance(cur,int): setattr(self.s,k,int(raw or "0"))
             elif isinstance(cur,float): setattr(self.s,k,float(raw or "0"))
             else: setattr(self.s,k,raw)
@@ -698,7 +1124,10 @@ class App:
         t0=time.perf_counter()
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav",delete=False) as h: path=Path(h.name)
-            sf.write(path,audio,self.s.sample_rate); text=self.backend.transcribe(path,self.s); text=normalize_text(text) if self.s.normalize_whitespace else text; self.res_q.put(("done",{"text":text,"elapsed":time.perf_counter()-t0,"audio_seconds":len(audio)/self.s.sample_rate,"source":source}))
+            sf.write(path,audio,self.s.sample_rate)
+            raw_text=self.backend.transcribe(path,self.s)
+            raw_text=normalize_text(raw_text) if self.s.normalize_whitespace else raw_text
+            self.res_q.put(("done",{"text":raw_text,"raw_text":raw_text,"elapsed":time.perf_counter()-t0,"audio_seconds":len(audio)/self.s.sample_rate,"source":source}))
         except Exception as e: self.res_q.put(("error","".join(traceback.format_exception(e))))
         finally:
             try: path.unlink(missing_ok=True)
@@ -751,6 +1180,7 @@ class App:
         self.pending_segments=[]
         self.last_emitted=""
         self.last_submitted=False
+        self._invalidate_ai_prefetch()
         self.log("Voice command executed: clear focused input")
         return True
     def _update_latest_transcript(self,text):
@@ -812,9 +1242,11 @@ class App:
         if sent_enter:
             self.pending_text=""
             self.pending_segments=[]
+            self._invalidate_ai_prefetch()
         else:
             self.pending_text=f"{self.pending_text}{payload}"
             self.pending_segments.append(payload)
+            self._schedule_ai_prefetch_for_pending()
     def _paste_text_via_clipboard(self,text:str)->bool:
         if not text:
             return False
@@ -842,6 +1274,66 @@ class App:
         self._remember_output_payload(text,sent_enter=False)
         self.last_paste_payload=text
         return True
+    def _replace_pending_with_prepared_clipboard(self, text:str, trace_id:str|None=None)->bool:
+        if not self.pending_text:
+            self.log("Voice command ignored: no current text to replace")
+            return False
+        if self.last_submitted:
+            self.log("Voice command ignored: last text was already submitted")
+            return False
+        info=fg_info()
+        allow_space=has_precise_text_focus(info)
+        payload=f"{text} " if text and allow_space else text
+        old_pending=self.pending_text
+        old_segments=list(self.pending_segments)
+        old_last=self.last_emitted
+        try:
+            keyboard=self._keyboard()
+        except Exception as e:
+            self.log(f"Output hotkeys unavailable: {e}")
+            return False
+        use_typed_output = self.s.output_mode=="type" and not self._should_safe_paste(info)
+        original_clipboard=get_clipboard_text() if not use_typed_output else ""
+        trace_prefix=f"{trace_id} | " if trace_id else ""
+        self.log(f"{trace_prefix}교체 준비: target=pending, mode={'type' if use_typed_output else 'paste'}, old_len={len(old_pending)}, new_len={len(payload)}")
+        if not use_typed_output and not set_clipboard_text(payload):
+            self.log("Voice command failed: failed to prepare correction clipboard")
+            return False
+        try:
+            try:
+                keyboard.press_and_release("end")
+                time.sleep(0.01)
+            except Exception as e:
+                self.log(f"Voice command failed: failed to prepare current input replacement ({e})")
+                return False
+            delete_started=time.perf_counter()
+            self.log(f"{trace_prefix}교체 시작")
+            if not self._backspace_text(old_pending):
+                return False
+            self.log(f"{trace_prefix}원문 제거 완료 ({time.perf_counter()-delete_started:.3f}s)")
+            self.pending_text=""
+            self.pending_segments=[]
+            self.last_emitted=""
+            self._update_latest_transcript(text)
+            reinject_started=time.perf_counter()
+            try:
+                if use_typed_output:
+                    keyboard.write(payload, delay=0)
+                else:
+                    keyboard.press_and_release(self._paste_hotkey())
+            except Exception as e:
+                return self._rollback_replace(old_pending,old_pending,old_segments,old_last,f"failed to emit corrected input ({e})",trace_id=trace_id)
+            time.sleep(0.03)
+            self._remember_output_payload(payload,sent_enter=False)
+            self.log(f"{trace_prefix}교정문 삽입 완료 ({time.perf_counter()-reinject_started:.3f}s)")
+            self.log(f"{trace_prefix}빈 구간 추정 {time.perf_counter()-delete_started:.3f}s")
+            self._remember_replace_state("pending",old_pending,payload,old_last,old_pending,old_segments)
+            self.log(f"{trace_prefix}교체 완료")
+            return True
+        finally:
+            if not use_typed_output:
+                time.sleep(0.02)
+                set_clipboard_text(original_clipboard)
     def _remember_replace_state(self,kind:str,old_text:str,new_payload:str,old_segment:str="",old_pending:str="",old_segments:list[str]|None=None):
         self.last_replace_state={
             "kind":kind,
@@ -919,6 +1411,7 @@ class App:
             if self.pending_text.endswith(payload):
                 self.pending_text=self.pending_text[:-len(payload)]
             self.last_emitted=self.pending_segments[-1] if self.pending_segments else ""
+        self._invalidate_ai_prefetch()
         self.log("Voice command executed: undo last paste")
         return True
     def undo_last_replace(self)->bool:
@@ -933,37 +1426,74 @@ class App:
         old_segments=state.get("old_segments",[])
         old_pending=state.get("old_pending","")
         old_segment=state.get("old_segment","")
-        self.emit_text(old_text,remember=False,press_enter=False,append_space=False)
-        if state.get("kind")=="last":
+        self.emit_text(old_text,remember=False,press_enter=False,append_space=False,force_paste=True)
+        if state.get("kind") in {"last","pending"}:
             self.pending_segments=old_segments
             self.pending_text=old_pending
             self.last_emitted=old_segment
+            self._schedule_ai_prefetch_for_pending()
         self.last_replace_state=None
         self.log("Voice command executed: undo last replace")
         return True
-    def emit_text(self,text,remember=True,press_enter:bool|None=None,append_space=True):
+    def _rollback_replace(self,restore_text:str,old_pending:str,old_segments:list[str],old_last:str,reason:str,trace_id:str|None=None)->bool:
+        restored=False
+        trace_prefix=f"{trace_id} | " if trace_id else ""
+        if restore_text:
+            restored=bool(self.emit_text(restore_text,remember=False,press_enter=False,append_space=False,force_paste=True))
+        self.pending_text=old_pending
+        self.pending_segments=list(old_segments)
+        self.last_emitted=old_last
+        self.last_replace_state=None
+        if old_pending and not self.last_submitted:
+            self._schedule_ai_prefetch_for_pending()
+        else:
+            self._invalidate_ai_prefetch()
+        if restore_text:
+            self._update_latest_transcript(restore_text)
+            self.log(f"{trace_prefix}롤백 시도 완료: restored={restored}")
+        self.log(f"{trace_prefix}Voice command failed: {reason}")
+        return restored
+    def emit_text(self,text,remember=True,press_enter:bool|None=None,append_space=True,force_paste:bool=False):
         try: import keyboard
-        except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return
+        except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return False
         sent_enter=self.s.auto_enter if press_enter is None else press_enter
         info=fg_info()
         allow_space=append_space and has_precise_text_focus(info)
         payload=f"{text} " if text and allow_space and not sent_enter else text
-        if self.s.output_mode=="clipboard": self.log("Copied transcript to clipboard"); return
-        if self.s.output_mode=="type" and not self._should_safe_paste(info):
-            keyboard.write(payload,delay=0)
+        if self.s.output_mode=="clipboard":
+            self.log("Copied transcript to clipboard")
+            return True
+        if self.s.output_mode=="type" and not force_paste and not self._should_safe_paste(info):
+            try:
+                keyboard.write(payload,delay=0)
+            except Exception as e:
+                self.log(f"Output typing failed: {e}")
+                return False
         else:
             original=get_clipboard_text()
             try:
-                set_clipboard_text(payload)
+                if not set_clipboard_text(payload):
+                    self.log("Output paste failed: clipboard set failed")
+                    return False
                 time.sleep(0.05)
                 keyboard.press_and_release(self._paste_hotkey())
+            except Exception as e:
+                self.log(f"Output paste failed: {e}")
+                return False
             finally:
                 time.sleep(0.03)
                 set_clipboard_text(original)
-        if sent_enter: time.sleep(0.03); keyboard.press_and_release("enter")
+        if sent_enter:
+            try:
+                time.sleep(0.03)
+                keyboard.press_and_release("enter")
+            except Exception as e:
+                self.log(f"Output enter failed: {e}")
+                return False
         if remember:
             self._remember_output_payload(payload,sent_enter=sent_enter)
         self.log(f"Transcript sent via {self.s.output_mode}")
+        return True
     def send_enter(self)->bool:
         try: keyboard=self._keyboard()
         except Exception as e: self.log(f"Output hotkeys unavailable: {e}"); return False
@@ -983,6 +1513,10 @@ class App:
         self.pending_segments=self.pending_segments[:-count]
         if self.pending_text.endswith(removed): self.pending_text=self.pending_text[:-len(removed)]
         self.last_emitted=self.pending_segments[-1] if self.pending_segments else ""
+        if self.pending_text and not self.last_submitted:
+            self._schedule_ai_prefetch_for_pending()
+        else:
+            self._invalidate_ai_prefetch()
         self.log(f"Voice command executed: erase last {count} segment(s)")
         return True
     def clear_pending_input(self)->bool:
@@ -996,40 +1530,140 @@ class App:
         self.pending_text=""
         self.pending_segments=[]
         self.last_emitted=""
+        self._invalidate_ai_prefetch()
         return True
-    def replace_last_emitted(self,text:str)->bool:
+    def replace_last_emitted(self,text:str,trace_id:str|None=None)->bool:
         if not self.pending_segments: self.log("Voice command ignored: no recent text to replace"); return False
         if self.last_submitted: self.log("Voice command ignored: last text was already submitted"); return False
         last_segment=self.pending_segments[-1]
         old_pending=self.pending_text
         old_segments=list(self.pending_segments)
+        old_last=self.last_emitted
+        trace_prefix=f"{trace_id} | " if trace_id else ""
+        self.log(f"{trace_prefix}교체 준비: target=last, old_len={len(last_segment)}, new_len={len(text)}")
         if not self._backspace_text(last_segment): return False
         self.pending_segments=self.pending_segments[:-1]
         if self.pending_text.endswith(last_segment): self.pending_text=self.pending_text[:-len(last_segment)]
-        self._update_latest_transcript(text); self.emit_text(text,remember=True,press_enter=False,append_space=True)
+        self._update_latest_transcript(text)
+        if not self.emit_text(text,remember=True,press_enter=False,append_space=True,force_paste=True):
+            return self._rollback_replace(last_segment,old_pending,old_segments,old_last,"failed to replace last emitted text",trace_id=trace_id)
         self._remember_replace_state("last",last_segment,self.last_emitted,last_segment,old_pending,old_segments)
-        self.log("Voice command executed: replace last emitted text")
+        self.log(f"{trace_prefix}교체 완료")
         return True
+    def replace_pending_text(self,text:str,trace_id:str|None=None)->bool:
+        return self._replace_pending_with_prepared_clipboard(text,trace_id=trace_id)
     def replace_selection_or_last(self,text:str)->bool:
-        selected=self._capture_selection_text(self._cut_hotkeys(), remove=True)
+        selected=self._capture_selection_text(self._copy_hotkeys())
         if selected:
             self._update_latest_transcript(text)
-            self.emit_text(text,remember=False,press_enter=False,append_space=False)
+            if not self.emit_text(text,remember=False,press_enter=False,append_space=False,force_paste=True):
+                self._update_latest_transcript(selected)
+                self.log("Voice command failed: failed to replace current selection")
+                return False
             self._remember_replace_state("selection",selected,text)
             self.log("Voice command executed: replace current selection")
             return True
         return self.replace_last_emitted(text)
+    def replace_selected_text(self,selected_text:str,text:str,trace_id:str|None=None)->bool:
+        selected=self._capture_selection_text(self._copy_hotkeys())
+        if not selected:
+            self.log("Voice command ignored: no selected text to replace")
+            return False
+        trace_prefix=f"{trace_id} | " if trace_id else ""
+        self.log(f"{trace_prefix}교체 준비: target=selection, old_len={len(selected)}, new_len={len(text)}")
+        self._update_latest_transcript(text)
+        if not self.emit_text(text,remember=False,press_enter=False,append_space=False,force_paste=True):
+            self._update_latest_transcript(selected_text or selected)
+            self.log("Voice command failed: failed to replace current selection")
+            return False
+        self._remember_replace_state("selection",selected,text)
+        self.log(f"{trace_prefix}교체 완료")
+        return True
+    def _get_ai_correction_target(self)->CorrectionTarget|None:
+        info=fg_info()
+        if self.pending_text and not self.last_submitted:
+            source=self.pending_text.strip()
+            if source:
+                return CorrectionTarget("pending",source)
+        if info and has_precise_text_focus(info) and not is_terminal(info):
+            selected=self._capture_selection_text(self._copy_hotkeys())
+            if selected and selected.strip():
+                return CorrectionTarget("selection",selected.strip())
+        source=self.last_emitted.strip()
+        if source:
+            return CorrectionTarget("last",source)
+        return None
+    def _apply_ai_correction_target(self,target:CorrectionTarget,corrected:str,trace_id:str|None=None)->bool:
+        if target.kind=="selection":
+            return self.replace_selected_text(target.source_text,corrected,trace_id=trace_id)
+        if target.kind=="pending":
+            return self.replace_pending_text(corrected,trace_id=trace_id)
+        return self.replace_last_emitted(corrected,trace_id=trace_id)
+    def ai_correct_selection_or_last(self)->bool:
+        if not self.s.llm_correction_enabled:
+            self.log("Voice command ignored: local LLM correction is disabled")
+            return False
+        trace_id=self.next_ai_correction_trace()
+        self.log(f"{trace_id} | 정정 명령 수신")
+        target=self._get_ai_correction_target()
+        if not target or not target.source_text:
+            self.log(f"{trace_id} | 교정 대상 없음")
+            return False
+        source=target.source_text
+        self.log(f"{trace_id} | 대상 확정: kind={target.kind}, text={short_log_text(source)}")
+        self.log(f"{trace_id} | LLM 요청 시작 전 원문 유지")
+        corrected=""
+        prefetched_outcome=""
+        if target.kind=="pending":
+            prefetched_outcome, corrected=self._consume_ai_prefetch(source)
+            corrected=corrected.strip()
+            if corrected:
+                if prefetched_outcome=="same":
+                    self.log(f"{trace_id} | 백그라운드 정정 후보 재사용 (same)")
+                else:
+                    self.log(f"{trace_id} | 백그라운드 정정 후보 재사용")
+            else:
+                with self.ai_prefetch_lock:
+                    should_wait=(
+                        self.ai_prefetch.in_flight
+                        and normalize_text(self.ai_prefetch.active_source_text)==normalize_text(source)
+                    )
+                if should_wait:
+                    self.log(f"{trace_id} | 백그라운드 정정 후보 대기")
+                    prefetched_outcome, corrected=self._await_ai_prefetch(source, timeout_seconds=self.s.llm_timeout_seconds+1.0)
+                    corrected=corrected.strip()
+                    if corrected:
+                        if prefetched_outcome=="same":
+                            self.log(f"{trace_id} | 백그라운드 정정 후보 완료 후 재사용 (same)")
+                        else:
+                            self.log(f"{trace_id} | 백그라운드 정정 후보 완료 후 재사용")
+        if prefetched_outcome=="same":
+            self._update_latest_transcript(source)
+            self.log(f"{trace_id} | 결과 동일 -> 원문 유지")
+            return True
+        if not corrected:
+            corrected=self.posteditor.correct(source,self.s,trace_id=trace_id).strip()
+        if not corrected:
+            self.log(f"{trace_id} | LLM 결과 비어 있음 -> 원문 유지")
+            return False
+        self.log(f"{trace_id} | LLM 결과 수신: {short_log_text(corrected)}")
+        if normalize_text(corrected)==normalize_text(source):
+            self._update_latest_transcript(source)
+            self.log(f"{trace_id} | 결과 동일 -> 원문 유지")
+            return True
+        self.log(f"{trace_id} | 결과 검증 통과 -> 교체 진행")
+        ok=self._apply_ai_correction_target(target,corrected,trace_id=trace_id)
+        if ok:
+            self.log(f"{trace_id} | 정정 완료")
+        else:
+            self.log(f"{trace_id} | 정정 실패 -> 원문 유지/복구 확인 필요")
+        return ok
     def _command_key(self,text:str)->str:
-        return "".join(ch for ch in text.strip().lower() if ch not in " \t\r\n.,!?;:\"'")
+        return command_key(text)
     def parse_language_switch(self,text:str)->str|None:
-        return LANGUAGE_SWITCH_COMMANDS.get(self._command_key(text))
+        return parse_language_switch_text(text)
     def parse_correction(self,text:str)->str:
-        raw=text.strip()
-        lowered=raw.lower()
-        for prefix in CORRECTION_PREFIXES:
-            if lowered.startswith(prefix):
-                return raw[len(prefix):].strip(" \t\r\n.,!?;:\"'")
-        return ""
+        return parse_correction_text(text)
     def set_language_mode(self,language:str)->bool:
         normalized=normalize_language_value(language)
         if normalized==self.s.language:
@@ -1053,32 +1687,7 @@ class App:
         label={"maximize":"maximize","minimize":"minimize","restore":"restore"}.get(action,action)
         self.log(f"Voice command executed: window {label}")
     def parse_media_command(self,text:str)->tuple[str,int]|None:
-        raw=text.strip().lower()
-        compact=self._command_key(text)
-        if compact in ESCAPE_COMMANDS:
-            return ("escape",1)
-        if compact in PLAY_PAUSE_COMMANDS:
-            return ("play_pause",1)
-        if compact in SEEK_FORWARD_COMMANDS:
-            return ("forward",1)
-        if compact in SEEK_BACKWARD_COMMANDS:
-            return ("backward",1)
-        for token,count in SLOT_NUMBER_WORDS.items():
-            raw_patterns=(
-                f"{token}번 앞으로 감기", f"{token} 번 앞으로 감기", f"앞으로 감기 {token}번", f"앞으로 감기 {token} 번",
-                f"{token}번 앞으로 감아", f"{token} 번 앞으로 감아", f"앞으로 감아 {token}번", f"앞으로 감아 {token} 번",
-                f"{token}번 뒤로 감기", f"{token} 번 뒤로 감기", f"뒤로 감기 {token}번", f"뒤로 감기 {token} 번",
-                f"{token}번 뒤로 감아", f"{token} 번 뒤로 감아", f"뒤로 감아 {token}번", f"뒤로 감아 {token} 번",
-            )
-            compact_patterns=(
-                f"{token}번앞으로감기", f"앞으로감기{token}번", f"{token}번앞으로감아", f"앞으로감아{token}번",
-                f"{token}번뒤로감기", f"뒤로감기{token}번", f"{token}번뒤로감아", f"뒤로감아{token}번",
-            )
-            if raw in raw_patterns or compact in compact_patterns:
-                if "뒤로" in raw or "뒤로" in compact:
-                    return ("backward",count)
-                return ("forward",count)
-        return None
+        return parse_media_command_text(text)
     def execute_media_control(self,action:str,count:int=1)->bool:
         info=fg_info()
         if not info or info.pid==APP_PID or info.proc in EXCLUDED_TARGET_PROCS or info.cls in EXCLUDED_TARGET_CLASSES:
@@ -1115,44 +1724,9 @@ class App:
             self.log(f"Voice command executed: seek backward x{count}")
         return True
     def parse_delete_count(self,text:str)->int:
-        raw=text.strip().lower()
-        compact=self._command_key(text)
-        if compact in DELETE_SOUND_ALIASES:
-            return 1
-        for suffix in ("번지워","번지어","번치워","개지워","개지어","개치워"):
-            if compact.endswith(suffix):
-                count_text=compact[:-len(suffix)]
-                if count_text.isdigit():
-                    return max(1,int(count_text))
-        for key,value in DELETE_COUNT_WORDS.items():
-            for suffix in (" 번 지워"," 번 지어"," 번 치워","개 지워","개 지어","개 치워","번만 지워","번만 지어","번만 치워"):
-                if raw==f"{key}{suffix}":
-                    return value
-            for suffix in ("번지워","번지어","번치워","개지워","개지어","개치워","번만지워","번만지어","번만치워"):
-                if compact==f"{key}{suffix}":
-                    return value
-        return 0
+        return parse_delete_count_text(text)
     def is_voice_command_text(self,text:str)->bool:
-        key=self._command_key(text)
-        if not key:
-            return False
-        if self._parse_slot_command(text):
-            return True
-        if key in ENTER_COMMANDS or key in COPY_COMMANDS or key in CUT_COMMANDS or key in PASTE_COMMANDS:
-            return True
-        if key in PASTE_UNDO_COMMANDS or key in REPLACE_UNDO_COMMANDS or key in CLEAR_FOCUSED_INPUT_COMMANDS or key in CLEAR_ALL_COMMANDS:
-            return True
-        if key in WINDOW_MAXIMIZE_COMMANDS or key in WINDOW_MINIMIZE_COMMANDS or key in WINDOW_RESTORE_COMMANDS:
-            return True
-        if self.parse_language_switch(text):
-            return True
-        if self.parse_media_command(text):
-            return True
-        if self.parse_delete_count(text):
-            return True
-        if self.parse_correction(text):
-            return True
-        return False
+        return is_voice_command_text(text)
     def handle_voice_command(self,text:str)->bool:
         key=self._command_key(text)
         if not key: return False
@@ -1170,6 +1744,7 @@ class App:
         if key in REPLACE_UNDO_COMMANDS: return self.undo_last_replace()
         if key in CLEAR_FOCUSED_INPUT_COMMANDS: return self._clear_focused_input()
         if key in CLEAR_ALL_COMMANDS: return self.clear_pending_input()
+        if key in AI_CORRECTION_COMMANDS: return self.ai_correct_selection_or_last()
         if key in WINDOW_MAXIMIZE_COMMANDS: return self.control_focused_window("maximize")
         if key in WINDOW_MINIMIZE_COMMANDS: return self.control_focused_window("minimize")
         if key in WINDOW_RESTORE_COMMANDS: return self.control_focused_window("restore")
@@ -1208,7 +1783,7 @@ class App:
                         if self.handle_voice_command(p["text"]): self.beep("done")
                         else: self.beep("error")
                         self._next(); continue
-                    self._update_latest_transcript(p["text"]); append_history(self.last,{"elapsed_seconds":round(float(p["elapsed"]),3),"audio_seconds":round(float(p["audio_seconds"]),3),"output_mode":self.s.output_mode,"source":p["source"]}); self.emit_text(self.last); self.beep("done"); self.log(f"Transcript ready from {p['source']} in {float(p['elapsed']):.2f}s for {float(p['audio_seconds']):.2f}s audio"); self._next()
+                    self._update_latest_transcript(p["text"]); append_history(self.last,{"elapsed_seconds":round(float(p["elapsed"]),3),"audio_seconds":round(float(p["audio_seconds"]),3),"output_mode":self.s.output_mode,"source":p["source"],"raw_text":p.get("raw_text","")}); self.emit_text(self.last); self.beep("done"); self.log(f"Transcript ready from {p['source']} in {float(p['elapsed']):.2f}s for {float(p['audio_seconds']):.2f}s audio"); self._next()
                 elif kind=="error": self.busy=False; self.refresh_status(); self.beep("error"); self.log("Transcription failed"); self.log(p); self._next()
         except queue.Empty: pass
         self.root.after(80,self.poll)
@@ -1236,7 +1811,7 @@ class App:
         self.root.destroy()
 
 def main():
-    p=argparse.ArgumentParser(description=APP_NAME); p.add_argument("--doctor",action="store_true"); p.add_argument("--transcribe-file",type=Path); p.add_argument("--model",type=str); p.add_argument("--language",type=str); a=p.parse_args(); s=load_settings()
+    p=argparse.ArgumentParser(description=APP_NAME); p.add_argument("--doctor",action="store_true"); p.add_argument("--transcribe-file",type=Path); p.add_argument("--model",type=str); p.add_argument("--language",type=str); p.add_argument("--show-window",action="store_true"); a=p.parse_args(); s=load_settings()
     if a.model: s.whisper_model=a.model
     if a.language is not None: s.language=normalize_language_value(a.language)
     if a.doctor: print(doctor(s)); return
@@ -1248,6 +1823,6 @@ def main():
     root=tk.Tk(); style=ttk.Style()
     try: style.theme_use("vista")
     except Exception: pass
-    App(root,launch_target=launch_target); root.mainloop()
+    App(root,launch_target=launch_target,show_window=a.show_window); root.mainloop()
 
 if __name__=="__main__": main()
