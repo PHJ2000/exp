@@ -82,6 +82,7 @@ class Settings:
     trim_silence:bool=True; trim_threshold:float=0.008; normalize_whitespace:bool=True; max_record_seconds:int=45; min_record_seconds:float=0.25
     beep_feedback:bool=False; keep_window_on_top:bool=False; enable_auto_stop:bool=False; auto_stop_silence_seconds:float=0.65
     always_listen_enabled:bool=True; always_listen_preroll_seconds:float=0.25
+    voice_trigger_min_rms:float=0.018; voice_trigger_ratio:float=2.2; voice_trigger_consecutive_blocks:int=2
 
 @dataclass
 class WinInfo:
@@ -262,6 +263,11 @@ def trim_silence(audio:np.ndarray,th:float)->np.ndarray:
     voiced=np.where(np.abs(audio)>th)[0]
     if voiced.size==0: return audio
     a=max(int(voiced[0])-1600,0); b=min(int(voiced[-1])+1600,len(audio)); return audio[a:b]
+
+def rms_level(audio:np.ndarray)->float:
+    if audio.size==0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(audio))))
 
 def normalize_text(text:str)->str: return " ".join(text.replace("\r"," ").replace("\n"," ").split()).strip()
 def initial_prompt_for_commands(settings:Settings)->str:
@@ -467,10 +473,10 @@ class WhisperBackend:
         return " ".join(x.text.strip() for x in segs).strip()
 
 class Recorder:
-    def __init__(self,s:Settings,log): self.s=s; self.log=log; self.stream=None; self.chunks=[]; self.lock=threading.Lock(); self.t0=0.0; self.last_voice=0.0; self.on=False
+    def __init__(self,s:Settings,log): self.s=s; self.log=log; self.stream=None; self.chunks=[]; self.lock=threading.Lock(); self.t0=0.0; self.last_voice=0.0; self.on=False; self.noise_floor=max(self.s.trim_threshold*0.8,0.003)
     def start(self):
         if self.on: return
-        self.chunks=[]; self.t0=time.monotonic(); self.last_voice=self.t0
+        self.chunks=[]; self.t0=time.monotonic(); self.last_voice=self.t0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003)
         self.stream=sd.InputStream(samplerate=self.s.sample_rate,channels=self.s.channels,dtype="float32",device=resolve_input_device(self.s.input_device),callback=self._cb); self.stream.start(); self.on=True; self.log("Recording started")
     def stop(self)->np.ndarray:
         if not self.on: return np.zeros(0,dtype=np.float32)
@@ -483,10 +489,15 @@ class Recorder:
         if status: self.log(f"Audio status: {status}")
         mono=indata[:,0].copy()
         with self.lock: self.chunks.append(mono)
-        if mono.size and float(np.sqrt(np.mean(np.square(mono))))>max(self.s.trim_threshold,0.008): self.last_voice=time.monotonic()
+        rms=rms_level(mono)
+        threshold=max(self.s.trim_threshold, self.s.voice_trigger_min_rms, self.noise_floor*self.s.voice_trigger_ratio)
+        if rms>=threshold:
+            self.last_voice=time.monotonic()
+        else:
+            self.noise_floor=(self.noise_floor*0.96)+(rms*0.04)
 
 class AlwaysListen:
-    def __init__(self,s:Settings,log,on_audio,target_active): self.s=s; self.log=log; self.on_audio=on_audio; self.target_active=target_active; self.stream=None; self.on=False; self.lock=threading.Lock(); self.pre=deque(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0
+    def __init__(self,s:Settings,log,on_audio,target_active): self.s=s; self.log=log; self.on_audio=on_audio; self.target_active=target_active; self.stream=None; self.on=False; self.lock=threading.Lock(); self.pre=deque(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003); self.voice_hits=0
     def start(self):
         if self.on: return
         self.reset(); self.stream=sd.InputStream(samplerate=self.s.sample_rate,channels=self.s.channels,dtype="float32",device=resolve_input_device(self.s.input_device),blocksize=max(int(self.s.sample_rate*0.06),512),callback=self._cb); self.stream.start(); self.on=True; self.log("Always-listen started")
@@ -494,7 +505,7 @@ class AlwaysListen:
         if not self.on: return
         self.stream.stop(); self.stream.close(); self.stream=None; self.on=False; self.reset(); self.log("Always-listen stopped")
     def reset(self):
-        with self.lock: self.pre.clear(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0
+        with self.lock: self.pre.clear(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003); self.voice_hits=0
     def _push_pre(self,mono):
         self.pre.append(mono); self.pre_n+=len(mono); limit=int(self.s.sample_rate*self.s.always_listen_preroll_seconds)
         while self.pre and self.pre_n>limit: self.pre_n-=len(self.pre.popleft())
@@ -505,14 +516,26 @@ class AlwaysListen:
         if status: self.log(f"Always-listen audio status: {status}")
         mono=indata[:,0].copy()
         if not self.target_active(): self.reset(); return
-        rms=float(np.sqrt(np.mean(np.square(mono))) if mono.size else 0.0); voice=rms>=max(self.s.trim_threshold,0.008); now=time.monotonic()
+        rms=rms_level(mono)
+        threshold=max(self.s.trim_threshold, self.s.voice_trigger_min_rms, self.noise_floor*self.s.voice_trigger_ratio)
+        voice=rms>=threshold
+        now=time.monotonic()
         with self.lock:
             if not self.chunks:
                 self._push_pre(mono)
-                if voice: self.chunks=list(self.pre); self.n=sum(len(x) for x in self.chunks); self.pre.clear(); self.pre_n=0; self.last_voice=now; self.log("Voice detected in target window")
+                if voice:
+                    self.voice_hits+=1
+                else:
+                    self.voice_hits=0
+                    self.noise_floor=(self.noise_floor*0.96)+(rms*0.04)
+                if self.voice_hits>=max(int(self.s.voice_trigger_consecutive_blocks),1):
+                    self.chunks=list(self.pre); self.n=sum(len(x) for x in self.chunks); self.pre.clear(); self.pre_n=0; self.last_voice=now; self.voice_hits=0; self.log(f"Voice detected in target window (rms={rms:.4f}, threshold={threshold:.4f})")
             else:
                 self.chunks.append(mono); self.n+=len(mono)
-                if voice: self.last_voice=now
+                if voice:
+                    self.last_voice=now
+                else:
+                    self.noise_floor=(self.noise_floor*0.98)+(rms*0.02)
                 if self.n/max(self.s.sample_rate,1)>=self.s.max_record_seconds or now-self.last_voice>=self.s.auto_stop_silence_seconds: self._finalize()
 
 def doctor(settings:Settings|None=None)->str:
@@ -1008,7 +1031,8 @@ class App:
         if not info:
             self.log("Voice command ignored: no active window")
             return False
-        if not control_window_state(info,action):
+        ok=control_window_state(info,action)
+        if not ok:
             self.log(f"Voice command ignored: unable to {action} current window")
             return False
         label={"maximize":"maximize","minimize":"minimize","restore":"restore"}.get(action,action)
