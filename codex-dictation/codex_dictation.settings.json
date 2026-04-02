@@ -3,6 +3,8 @@
   "sample_rate": 16000,
   "channels": 1,
   "input_gain": 1.0,
+  "audio_preset": "manual",
+  "noise_gate_threshold": 0.0,
   "whisper_model": "large-v3-turbo",
   "whisper_device": "auto",
   "whisper_compute_type": "auto",
