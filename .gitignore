@@ -2,6 +2,8 @@
 AGENTS.md
 __pycache__/
 *.pyc
+codex-dictation/build/
+codex-dictation/dist/
 codex-dictation/codex_dictation.history.jsonl
 codex-dictation/codex_dictation.log
 tmp_*.txt

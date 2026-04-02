@@ -1,0 +1,2 @@
+-r requirements-dictation.txt
+PyInstaller>=6.19.0
