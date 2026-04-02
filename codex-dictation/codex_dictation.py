@@ -85,7 +85,7 @@ DELETE_COUNT_WORDS={
 
 @dataclass
 class Settings:
-    input_device:str=""; sample_rate:int=16000; channels:int=1; whisper_model:str="large-v3-turbo"; whisper_device:str="auto"; whisper_compute_type:str="auto"
+    input_device:str=""; sample_rate:int=16000; channels:int=1; input_gain:float=1.0; whisper_model:str="large-v3-turbo"; whisper_device:str="auto"; whisper_compute_type:str="auto"
     language:str="auto"; initial_prompt:str=""; record_hotkey:str="f8"; always_listen_hotkey:str="f7"; paste_last_hotkey:str="f9"
     toggle_output_hotkey:str="f10"; toggle_enter_hotkey:str="f11"; output_mode:str="type"; paste_hotkey:str="ctrl+v"; auto_enter:bool=False
     trim_silence:bool=True; trim_threshold:float=0.008; normalize_whitespace:bool=True; max_record_seconds:int=45; min_record_seconds:float=0.25
@@ -443,6 +443,7 @@ def load_settings()->Settings:
         s=Settings(); save_settings(s); return s
     data=json.loads(SETTINGS_PATH.read_text(encoding="utf-8")); ok={f.name for f in Settings.__dataclass_fields__.values()}
     settings=Settings(**{k:v for k,v in data.items() if k in ok})
+    settings.input_gain=max(float(settings.input_gain),0.0)
     settings.language=normalize_language_value(settings.language)
     settings.llm_profile=normalize_llm_profile_value(settings.llm_profile)
     return settings
@@ -570,6 +571,14 @@ def rms_level(audio:np.ndarray)->float:
     if audio.size==0:
         return 0.0
     return float(np.sqrt(np.mean(np.square(audio))))
+
+def apply_input_gain(audio:np.ndarray,gain:float)->np.ndarray:
+    if audio.size==0:
+        return audio
+    gain=max(float(gain),0.0)
+    if gain==1.0:
+        return audio
+    return np.clip((audio*gain).astype(np.float32,copy=False),-1.0,1.0).astype(np.float32,copy=False)
 
 def normalize_text(text:str)->str: return " ".join(text.replace("\r"," ").replace("\n"," ").split()).strip()
 def initial_prompt_for_commands(settings:Settings)->str:
@@ -800,7 +809,7 @@ class Recorder:
     def should_stop(self)->bool: return self.on and self.s.enable_auto_stop and self.duration()>=self.s.min_record_seconds and time.monotonic()-self.last_voice>=self.s.auto_stop_silence_seconds
     def _cb(self,indata,frames,time_info,status):
         if status: self.log(f"Audio status: {status}")
-        mono=indata[:,0].copy()
+        mono=apply_input_gain(indata[:,0].copy(),self.s.input_gain)
         with self.lock: self.chunks.append(mono)
         rms=rms_level(mono)
         threshold=max(self.s.trim_threshold, self.s.voice_trigger_min_rms, self.noise_floor*self.s.voice_trigger_ratio)
@@ -827,7 +836,7 @@ class AlwaysListen:
         audio=np.concatenate(self.chunks).astype(np.float32); self.chunks=[]; self.n=0; self.last_voice=0.0; self.on_audio(audio,"always_listen")
     def _cb(self,indata,frames,time_info,status):
         if status: self.log(f"Always-listen audio status: {status}")
-        mono=indata[:,0].copy()
+        mono=apply_input_gain(indata[:,0].copy(),self.s.input_gain)
         if not self.target_active(): self.reset(); return
         rms=rms_level(mono)
         threshold=max(self.s.trim_threshold, self.s.voice_trigger_min_rms, self.noise_floor*self.s.voice_trigger_ratio)
@@ -889,7 +898,7 @@ class App:
         self.ai_correction_seq=0
         self.ai_prefetch_lock=threading.Lock()
         self.ai_prefetch=AICorrectionPrefetchState()
-        self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","whisper_model","whisper_device","whisper_compute_type","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds","llm_model","llm_base_url","llm_timeout_seconds"]}
+        self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","input_gain","whisper_model","whisper_device","whisper_compute_type","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds","llm_model","llm_base_url","llm_timeout_seconds"]}
         self.vars["language"]=tk.StringVar(value=language_label(self.s.language))
         self.vars["llm_profile"]=tk.StringVar(value=llm_profile_label(self.s.llm_profile))
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled","llm_correction_enabled"]}
@@ -899,8 +908,8 @@ class App:
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
         ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 전체 비워, 다시 ..., 복사, 붙여넣기, 잘라, 취소, 되돌려, 자동/한국어/영어, 최대화/최소화/복원, 이스케이프/나가기, 일시정지/재생, 앞으로/뒤로 감기").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
         top=ttk.Frame(self.root,padding=(12,0,12,0)); top.grid(row=1,column=0,sticky="nsew"); top.columnconfigure((0,1),weight=1); left=ttk.LabelFrame(top,text="Recording",padding=12); right=ttk.LabelFrame(top,text="Output, Target, Hotkeys",padding=12); left.grid(row=0,column=0,sticky="nsew",padx=(0,6)); right.grid(row=0,column=1,sticky="nsew",padx=(6,0))
-        self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],2); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],3); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],4); self._combo(left,"Language","language",["자동","한국어","영어"],5); self._entry(left,"Initial Prompt","initial_prompt",6); self._entry(left,"Max Record Seconds","max_record_seconds",7); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",8); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",9)
-        self._check(left,"Trim leading and trailing silence","trim_silence",10); self._check(left,"Normalize whitespace","normalize_whitespace",11); self._check(left,"Enable manual mode auto stop","enable_auto_stop",12); self._check(left,"Play feedback beeps","beep_feedback",13); self._check(left,"Keep window on top","keep_window_on_top",14)
+        self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._entry(left,"Input Gain","input_gain",2); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],3); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],4); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],5); self._combo(left,"Language","language",["자동","한국어","영어"],6); self._entry(left,"Initial Prompt","initial_prompt",7); self._entry(left,"Max Record Seconds","max_record_seconds",8); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",9); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",10)
+        self._check(left,"Trim leading and trailing silence","trim_silence",11); self._check(left,"Normalize whitespace","normalize_whitespace",12); self._check(left,"Enable manual mode auto stop","enable_auto_stop",13); self._check(left,"Play feedback beeps","beep_feedback",14); self._check(left,"Keep window on top","keep_window_on_top",15)
         self._combo(right,"Output Mode","output_mode",["paste","clipboard","type"],0); self._entry(right,"Paste Hotkey","paste_hotkey",1); self._check(right,"Press Enter after output","auto_enter",2); self._check(right,"Always listen when target input window is focused","always_listen_enabled",3); self._entry(right,"Always Listen Hotkey","always_listen_hotkey",4); self._entry(right,"Record Hotkey","record_hotkey",5); self._entry(right,"Paste Last Hotkey","paste_last_hotkey",6); self._entry(right,"Toggle Output Hotkey","toggle_output_hotkey",7); self._entry(right,"Toggle Enter Hotkey","toggle_enter_hotkey",8); self._check(right,"Enable local LLM correction command","llm_correction_enabled",9); self._combo(right,"LLM Profile","llm_profile",["균형","정확도","직접지정"],10); self._entry(right,"LLM Model","llm_model",11); self._entry(right,"LLM Base URL","llm_base_url",12); self._entry(right,"LLM Timeout Seconds","llm_timeout_seconds",13)
         btn=ttk.Frame(right); btn.grid(row=13,column=0,columnspan=2,sticky="ew",pady=(14,0)); [btn.columnconfigure(i,weight=1) for i in range(3)]
         for r,c,text,cmd in [(0,0,"Start / Stop Manual",self.toggle_recording),(0,1,"Toggle Always Listen",self.toggle_always_listen),(0,2,"Paste Last",self.paste_last),(1,0,"Save Settings",self.save_from_ui),(1,1,"Doctor",self.show_doctor),(1,2,"Refresh Hotkeys",self.register_hotkeys),(2,0,"Copy Last",self.copy_last)]:
@@ -1072,6 +1081,8 @@ class App:
             elif isinstance(cur,int): setattr(self.s,k,int(raw or "0"))
             elif isinstance(cur,float): setattr(self.s,k,float(raw or "0"))
             else: setattr(self.s,k,raw)
+        self.s.input_gain=max(float(self.s.input_gain),0.0)
+        self.vars["input_gain"].set(str(self.s.input_gain))
         for k,v in self.bools.items(): setattr(self.s,k,bool(v.get()))
         save_settings(self.s); self.rec.s=self.s; self.listen.s=self.s; self.root.attributes("-topmost",self.s.keep_window_on_top); self.refresh_target(); self.refresh_status(); self.log("Settings saved")
     def register_hotkeys(self):
