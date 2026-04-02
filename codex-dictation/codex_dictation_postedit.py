@@ -36,18 +36,20 @@ def conservative_postedit_prompt(text: str, language: str, strict: bool = False)
     strict_note = (
         "- 원문의 단어 순서와 문장 수를 최대한 유지합니다.\n"
         "- 새 단어를 덧붙이거나 설명을 쓰지 않습니다.\n"
-        "- 확신이 없으면 한 글자도 바꾸지 않습니다.\n"
+        "- 확신이 낮으면 최소 수정만 하고 유지합니다.\n"
     ) if strict else ""
     return (
         "당신은 STT 후처리 교정기입니다.\n"
         f"{lang_note}\n"
-        "아래 원문을 보수적으로만 교정하세요.\n"
+        "아래 원문을 오타/띄어쓰기/문법 중심으로 교정하세요.\n"
         "규칙:\n"
         "- 띄어쓰기, 조사, 문장 부호, 명백한 오인식만 고칩니다.\n"
+        "- 한국어는 붙여 쓴 말, 띄어 쓴 음절, 조사/어미 오류를 적극적으로 바로잡습니다.\n"
+        "- 짧은 문장이나 구절도 자연스러운 한국어 문장으로 다듬을 수 있으면 고칩니다.\n"
         "- 뜻을 추정해서 새 내용을 추가하지 않습니다.\n"
         "- 문장 수를 늘리지 않습니다.\n"
         "- 요약하거나 재서술하지 않습니다.\n"
-        "- 확신이 없으면 원문을 유지합니다.\n"
+        "- 완전히 다른 문장으로 다시 쓰지는 않습니다.\n"
         f"{strict_note}"
         "- 설명 없이 교정 결과만 한 줄로 출력합니다.\n\n"
         f"원문:\n{text}\n"
@@ -74,6 +76,38 @@ def _postedit_compare_key(text: str) -> str:
     return "".join(ch for ch in (text or "").lower() if ch.isalnum())
 
 
+def _hangul_char_count(text: str) -> int:
+    return sum(1 for ch in (text or "") if "가" <= ch <= "힣")
+
+
+def _is_korean_heavy(text: str) -> bool:
+    normalized = normalize_text(text or "")
+    if not normalized:
+        return False
+    hangul_count = _hangul_char_count(normalized)
+    if hangul_count < 2:
+        return False
+    compact = "".join(ch for ch in normalized if not ch.isspace())
+    return hangul_count >= max(2, len(compact) // 3)
+
+
+def _postedit_acceptance_thresholds(original: str) -> tuple[float, float]:
+    original_norm = normalize_text(original or "")
+    original_key = _postedit_compare_key(original_norm)
+    if not _is_korean_heavy(original_norm):
+        return 0.75, 0.82
+    key_len = len(original_key)
+    if key_len <= 4:
+        return 0.25, 0.30
+    if key_len <= 8:
+        return 0.32, 0.38
+    if key_len <= 16:
+        return 0.40, 0.46
+    if key_len <= 28:
+        return 0.52, 0.58
+    return 0.64, 0.66
+
+
 def should_accept_postedit(original: str, corrected: str) -> bool:
     original_norm = normalize_text(original or "")
     corrected_norm = normalize_text(corrected or "")
@@ -95,13 +129,15 @@ def should_accept_postedit(original: str, corrected: str) -> bool:
     corrected_sentences = sum(corrected_norm.count(ch) for ch in ".!?")
     if corrected_sentences > original_sentences + 1:
         return False
-    if ratio < 0.75 and key_ratio < 0.82:
+    min_ratio, min_key_ratio = _postedit_acceptance_thresholds(original_norm)
+    if ratio < min_ratio and key_ratio < min_key_ratio:
         return False
     if len(corrected_norm) > max(len(original_norm) * 2, len(original_norm) + 24):
         return False
     if len(corrected_norm) < max(1, int(len(original_norm) * 0.4)):
         return False
-    if key_ratio < 0.68:
+    hard_key_floor = 0.35 if _is_korean_heavy(original_norm) and len(original_key) <= 8 else 0.50 if _is_korean_heavy(original_norm) else 0.68
+    if key_ratio < hard_key_floor:
         return False
     return True
 
