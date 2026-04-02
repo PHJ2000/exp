@@ -39,10 +39,13 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.busy = False
         self.last = ""
         self.last_emitted = ""
+        self.last_emitted_context = None
         self.last_submitted = False
         self.pending_text = ""
         self.pending_segments = []
+        self.pending_context = None
         self.last_target = None
+        self.last_target_context = None
         self.t = None
         self.startup_minimized = False
         self.internal_buffer = ""

@@ -14,7 +14,7 @@ from tkinter import messagebox
 from codex_dictation_audio import trim_silence
 from codex_dictation_diagnostics import doctor
 from codex_dictation_settings import audio_preset_label, language_label, llm_profile_label, normalize_audio_preset_value, normalize_language_value, normalize_llm_profile_value, resolve_llm_model, save_settings
-from codex_dictation_targeting import APP_PID, fg_info, focus_best_terminal, focus_window, is_target_window
+from codex_dictation_targeting import APP_PID, fg_info, focus_best_terminal, focus_window, is_target_window, target_context_key
 from codex_dictation_utils import append_history, normalize_text
 
 
@@ -345,10 +345,16 @@ class AppRuntimeMixin:
         self.root.after(120, self.poll_diagnostics)
 
     def poll_target(self):
-        active = self.target_active()
+        info = fg_info()
+        active = is_target_window(info)
+        context = target_context_key(info) if active else None
+        if self.pending_text and self.pending_context and context != self.pending_context:
+            self._clear_pending_state(clear_last_emitted=False, clear_last_submitted=False)
+            self.log("Pending input cleared: focused input context changed")
         if active != self.last_target:
             self.last_target = active
             self.log("Target window active" if active else "Target window inactive")
+        self.last_target_context = context
         self.root.after(150, self.poll_target)
 
     def close(self):

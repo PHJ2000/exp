@@ -14,10 +14,35 @@ from codex_dictation_targeting import (
     has_precise_text_focus,
     is_terminal,
     set_clipboard_text,
+    target_context_key,
 )
 
 
 class AppOutputMixin:
+    def _current_target_context(self, info: WinInfo | None = None):
+        return target_context_key(info if info is not None else fg_info())
+
+    def _clear_pending_state(self, *, clear_last_emitted: bool = False, clear_last_submitted: bool = False):
+        self.pending_text = ""
+        self.pending_segments = []
+        self.pending_context = None
+        if clear_last_emitted:
+            self.last_emitted = ""
+            self.last_emitted_context = None
+        if clear_last_submitted:
+            self.last_submitted = False
+        self._invalidate_ai_prefetch()
+
+    def _clear_stale_pending_if_needed(self, info: WinInfo | None = None, reason: str = "target context changed") -> bool:
+        if not self.pending_text or not self.pending_context or self.last_submitted:
+            return False
+        current_context = self._current_target_context(info)
+        if current_context and current_context == self.pending_context:
+            return False
+        self._clear_pending_state(clear_last_emitted=False, clear_last_submitted=False)
+        self.log(f"Pending input cleared: {reason}")
+        return True
+
     def _keyboard(self):
         import keyboard
 
@@ -50,11 +75,7 @@ class AppOutputMixin:
         keyboard.press_and_release("delete")
         time.sleep(0.03)
         keyboard.press_and_release("backspace")
-        self.pending_text = ""
-        self.pending_segments = []
-        self.last_emitted = ""
-        self.last_submitted = False
-        self._invalidate_ai_prefetch()
+        self._clear_pending_state(clear_last_emitted=True, clear_last_submitted=True)
         self.log("Voice command executed: clear focused input")
         return True
 
@@ -116,14 +137,19 @@ class AppOutputMixin:
             self.log(f"Voice command executed: store slot {slot}")
         return True
 
-    def _remember_output_payload(self, payload: str, sent_enter: bool = False):
+    def _remember_output_payload(self, payload: str, sent_enter: bool = False, target_context=None):
         self.last_emitted = payload
+        self.last_emitted_context = target_context
         self.last_submitted = bool(sent_enter)
         if sent_enter:
-            self.pending_text = ""
-            self.pending_segments = []
-            self._invalidate_ai_prefetch()
+            self._clear_pending_state(clear_last_emitted=False, clear_last_submitted=False)
         else:
+            if target_context and self.pending_context and target_context != self.pending_context and self.pending_text:
+                self.log("Pending input cleared: output target changed")
+                self.pending_text = ""
+                self.pending_segments = []
+                self._invalidate_ai_prefetch()
+            self.pending_context = target_context
             self.pending_text = f"{self.pending_text}{payload}"
             self.pending_segments.append(payload)
             self._schedule_ai_prefetch_for_pending()
@@ -153,23 +179,26 @@ class AppOutputMixin:
         self._update_latest_transcript(text)
         if not self._paste_text_via_clipboard(text):
             return False
-        self._remember_output_payload(text, sent_enter=False)
+        self._remember_output_payload(text, sent_enter=False, target_context=self._current_target_context())
         self.last_paste_payload = text
         return True
 
     def _replace_pending_with_prepared_clipboard(self, text: str, trace_id: str | None = None) -> bool:
+        info = fg_info()
+        self._clear_stale_pending_if_needed(info, reason="pending target no longer matches focused input")
         if not self.pending_text:
             self.log("Voice command ignored: no current text to replace")
             return False
         if self.last_submitted:
             self.log("Voice command ignored: last text was already submitted")
             return False
-        info = fg_info()
         allow_space = has_precise_text_focus(info)
         payload = f"{text} " if text and allow_space else text
         old_pending = self.pending_text
         old_segments = list(self.pending_segments)
         old_last = self.last_emitted
+        old_pending_context = self.pending_context
+        old_last_context = self.last_emitted_context
         try:
             keyboard = self._keyboard()
         except Exception as exc:
@@ -196,7 +225,9 @@ class AppOutputMixin:
             self.log(f"{trace_prefix}원문 제거 완료 ({time.perf_counter() - delete_started:.3f}s)")
             self.pending_text = ""
             self.pending_segments = []
+            self.pending_context = None
             self.last_emitted = ""
+            self.last_emitted_context = None
             self._update_latest_transcript(text)
             reinject_started = time.perf_counter()
             try:
@@ -205,12 +236,30 @@ class AppOutputMixin:
                 else:
                     keyboard.press_and_release(self._paste_hotkey())
             except Exception as exc:
-                return self._rollback_replace(old_pending, old_pending, old_segments, old_last, f"failed to emit corrected input ({exc})", trace_id=trace_id)
+                return self._rollback_replace(
+                    old_pending,
+                    old_pending,
+                    old_segments,
+                    old_last,
+                    f"failed to emit corrected input ({exc})",
+                    trace_id=trace_id,
+                    old_pending_context=old_pending_context,
+                    old_last_context=old_last_context,
+                )
             time.sleep(0.03)
-            self._remember_output_payload(payload, sent_enter=False)
+            self._remember_output_payload(payload, sent_enter=False, target_context=self._current_target_context(info))
             self.log(f"{trace_prefix}교정문 삽입 완료 ({time.perf_counter() - reinject_started:.3f}s)")
             self.log(f"{trace_prefix}빈 구간 추정 {time.perf_counter() - delete_started:.3f}s")
-            self._remember_replace_state("pending", old_pending, payload, old_last, old_pending, old_segments)
+            self._remember_replace_state(
+                "pending",
+                old_pending,
+                payload,
+                old_last,
+                old_pending,
+                old_segments,
+                old_pending_context=old_pending_context,
+                old_segment_context=old_last_context,
+            )
             self.log(f"{trace_prefix}교체 완료")
             return True
         finally:
@@ -218,7 +267,17 @@ class AppOutputMixin:
                 time.sleep(0.02)
                 set_clipboard_text(original_clipboard)
 
-    def _remember_replace_state(self, kind: str, old_text: str, new_payload: str, old_segment: str = "", old_pending: str = "", old_segments: list[str] | None = None):
+    def _remember_replace_state(
+        self,
+        kind: str,
+        old_text: str,
+        new_payload: str,
+        old_segment: str = "",
+        old_pending: str = "",
+        old_segments: list[str] | None = None,
+        old_pending_context=None,
+        old_segment_context=None,
+    ):
         self.last_replace_state = {
             "kind": kind,
             "old_text": old_text,
@@ -226,6 +285,8 @@ class AppOutputMixin:
             "old_segment": old_segment,
             "old_pending": old_pending,
             "old_segments": list(old_segments or []),
+            "old_pending_context": old_pending_context,
+            "old_segment_context": old_segment_context,
         }
 
     def undo_last_paste(self) -> bool:
@@ -241,6 +302,7 @@ class AppOutputMixin:
             if self.pending_text.endswith(payload):
                 self.pending_text = self.pending_text[: -len(payload)]
             self.last_emitted = self.pending_segments[-1] if self.pending_segments else ""
+            self.last_emitted_context = self.pending_context if self.pending_segments else None
         self._invalidate_ai_prefetch()
         self.log("Voice command executed: undo last paste")
         return True
@@ -257,24 +319,40 @@ class AppOutputMixin:
         old_segments = state.get("old_segments", [])
         old_pending = state.get("old_pending", "")
         old_segment = state.get("old_segment", "")
+        old_pending_context = state.get("old_pending_context")
+        old_segment_context = state.get("old_segment_context")
         self.emit_text(old_text, remember=False, press_enter=False, append_space=False, force_paste=True)
         if state.get("kind") in {"last", "pending"}:
             self.pending_segments = old_segments
             self.pending_text = old_pending
+            self.pending_context = old_pending_context
             self.last_emitted = old_segment
+            self.last_emitted_context = old_segment_context
             self._schedule_ai_prefetch_for_pending()
         self.last_replace_state = None
         self.log("Voice command executed: undo last replace")
         return True
 
-    def _rollback_replace(self, restore_text: str, old_pending: str, old_segments: list[str], old_last: str, reason: str, trace_id: str | None = None) -> bool:
+    def _rollback_replace(
+        self,
+        restore_text: str,
+        old_pending: str,
+        old_segments: list[str],
+        old_last: str,
+        reason: str,
+        trace_id: str | None = None,
+        old_pending_context=None,
+        old_last_context=None,
+    ) -> bool:
         restored = False
         trace_prefix = f"{trace_id} | " if trace_id else ""
         if restore_text:
             restored = bool(self.emit_text(restore_text, remember=False, press_enter=False, append_space=False, force_paste=True))
         self.pending_text = old_pending
         self.pending_segments = list(old_segments)
+        self.pending_context = old_pending_context
         self.last_emitted = old_last
+        self.last_emitted_context = old_last_context
         self.last_replace_state = None
         if old_pending and not self.last_submitted:
             self._schedule_ai_prefetch_for_pending()
@@ -294,6 +372,7 @@ class AppOutputMixin:
             return False
         sent_enter = self.s.auto_enter if press_enter is None else press_enter
         info = fg_info()
+        current_context = self._current_target_context(info)
         allow_space = append_space and has_precise_text_focus(info)
         payload = f"{text} " if text and allow_space and not sent_enter else text
         if self.s.output_mode == "clipboard":
@@ -327,7 +406,7 @@ class AppOutputMixin:
                 self.log(f"Output enter failed: {exc}")
                 return False
         if remember:
-            self._remember_output_payload(payload, sent_enter=sent_enter)
+            self._remember_output_payload(payload, sent_enter=sent_enter, target_context=current_context)
         self.log(f"Transcript sent via {self.s.output_mode}")
         return True
 
@@ -341,6 +420,8 @@ class AppOutputMixin:
         self.last_submitted = True
         self.pending_text = ""
         self.pending_segments = []
+        self.pending_context = None
+        self._invalidate_ai_prefetch()
         self.log("Voice command executed: submit")
         return True
 
@@ -370,6 +451,8 @@ class AppOutputMixin:
         return True
 
     def clear_pending_input(self) -> bool:
+        info = fg_info()
+        self._clear_stale_pending_if_needed(info, reason="pending target no longer matches focused input")
         if not self.pending_text:
             self.log("Voice command ignored: no current text to clear")
             return False
@@ -385,13 +468,14 @@ class AppOutputMixin:
         if not self._backspace_text(self.pending_text):
             return False
         self.log("Voice command executed: clear current input")
-        self.pending_text = ""
-        self.pending_segments = []
-        self.last_emitted = ""
-        self._invalidate_ai_prefetch()
+        self._clear_pending_state(clear_last_emitted=True, clear_last_submitted=False)
         return True
 
     def replace_last_emitted(self, text: str, trace_id: str | None = None) -> bool:
+        info = fg_info()
+        if self.last_emitted_context and self._current_target_context(info) != self.last_emitted_context:
+            self.log("Voice command ignored: last emitted text belongs to a different input context")
+            return False
         if not self.pending_segments:
             self.log("Voice command ignored: no recent text to replace")
             return False
@@ -402,6 +486,8 @@ class AppOutputMixin:
         old_pending = self.pending_text
         old_segments = list(self.pending_segments)
         old_last = self.last_emitted
+        old_pending_context = self.pending_context
+        old_last_context = self.last_emitted_context
         trace_prefix = f"{trace_id} | " if trace_id else ""
         self.log(f"{trace_prefix}교체 준비: target=last, old_len={len(last_segment)}, new_len={len(text)}")
         if not self._backspace_text(last_segment):
@@ -411,8 +497,26 @@ class AppOutputMixin:
             self.pending_text = self.pending_text[: -len(last_segment)]
         self._update_latest_transcript(text)
         if not self.emit_text(text, remember=True, press_enter=False, append_space=True, force_paste=True):
-            return self._rollback_replace(last_segment, old_pending, old_segments, old_last, "failed to replace last emitted text", trace_id=trace_id)
-        self._remember_replace_state("last", last_segment, self.last_emitted, last_segment, old_pending, old_segments)
+            return self._rollback_replace(
+                last_segment,
+                old_pending,
+                old_segments,
+                old_last,
+                "failed to replace last emitted text",
+                trace_id=trace_id,
+                old_pending_context=old_pending_context,
+                old_last_context=old_last_context,
+            )
+        self._remember_replace_state(
+            "last",
+            last_segment,
+            self.last_emitted,
+            last_segment,
+            old_pending,
+            old_segments,
+            old_pending_context=old_pending_context,
+            old_segment_context=old_last_context,
+        )
         self.log(f"{trace_prefix}교체 완료")
         return True
 

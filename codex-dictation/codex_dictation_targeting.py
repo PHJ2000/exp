@@ -287,6 +287,22 @@ def has_precise_text_focus(info: WinInfo | None) -> bool:
     return focus.focus_cls in INPUT_FOCUS_CLASSES or focus.caret_cls in INPUT_FOCUS_CLASSES
 
 
+def target_context_key(info: WinInfo | None):
+    if not info:
+        return None
+    focus = gui_focus_info(info)
+    if not focus:
+        return (info.hwnd, info.pid, 0, 0, "", "")
+    return (
+        info.hwnd,
+        info.pid,
+        focus.focus_hwnd,
+        focus.caret_hwnd,
+        focus.focus_cls,
+        focus.caret_cls,
+    )
+
+
 def is_target_window(info: WinInfo | None) -> bool:
     return bool(info and (is_terminal(info) or is_general_input_target(info)))
 
