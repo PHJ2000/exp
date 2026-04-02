@@ -41,6 +41,25 @@ python -m venv .venv
 
 이미 이 저장소의 `.venv`를 쓰고 있다면 마지막 줄만 실행하면 됩니다.
 
+## 단일 실행 파일 빌드
+
+Python 설치와 가상환경 준비가 번거로운 PC로 옮길 때는 `PyInstaller`로 단일 `exe`를 만들 수 있습니다.
+
+```powershell
+codex-dictation\build_codex_dictation_exe.ps1
+```
+
+빌드가 끝나면 아래 파일이 생성됩니다.
+
+```text
+codex-dictation\dist\CodexDictation.exe
+```
+
+메모:
+- `exe`로 실행해도 `codex_dictation.settings.json`, `codex_dictation.history.jsonl`, `codex_dictation.log`는 `exe`가 있는 폴더 옆에 저장됩니다.
+- 첫 실행 시 `faster-whisper` 모델이 PC에 없다면 모델 다운로드는 여전히 한 번 필요합니다.
+- 전역 핫키는 기존처럼 `tools\AutoHotkey` 또는 `run_codex_hotkeys.bat` 흐름을 같이 쓰는 것이 가장 편합니다.
+
 ## 실행
 
 ```powershell
@@ -52,6 +71,8 @@ python -m venv .venv
 ```powershell
 codex-dictation\run_codex_dictation.bat
 ```
+
+`CodexDictation.exe`가 `codex-dictation\dist\` 아래에 있으면 같은 런처가 자동으로 `exe`를 우선 실행합니다.
 
 Codex 터미널만 빠르게 열기:
 

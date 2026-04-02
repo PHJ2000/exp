@@ -8,7 +8,12 @@ from pathlib import Path
 import numpy as np, sounddevice as sd, soundfile as sf, tkinter as tk
 from tkinter import messagebox, ttk
 
-APP_NAME="Codex Dictation"; ROOT=Path(__file__).resolve().parent; APP_PID=os.getpid()
+def _runtime_root()->Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+APP_NAME="Codex Dictation"; ROOT=_runtime_root(); APP_PID=os.getpid()
 SETTINGS_PATH=ROOT/"codex_dictation.settings.json"; HISTORY_PATH=ROOT/"codex_dictation.history.jsonl"; LOG_PATH=ROOT/"codex_dictation.log"
 AI_PREFETCH_CACHE_SIZE=3
 TERMINALS={"windowsterminal.exe","wezterm-gui.exe","conhost.exe","powershell.exe","pwsh.exe","cmd.exe","mintty.exe","alacritty.exe","rio.exe","code.exe","cursor.exe"}

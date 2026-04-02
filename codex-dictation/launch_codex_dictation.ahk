@@ -9,6 +9,7 @@ projectDir := A_ScriptDir
 dictationTitle := "Codex Dictation"
 dictationLauncher := projectDir "\run_codex_dictation.bat"
 dictationScript := projectDir "\codex_dictation.py"
+dictationExe := projectDir "\dist\CodexDictation.exe"
 
 StartDictation(showWindow := false)
 {
@@ -40,14 +41,21 @@ CanRestoreWindow(hwnd)
 
 IsDictationProcessRunning()
 {
-    global dictationScript
+    global dictationScript, dictationExe
     escapedScript := StrReplace(dictationScript, "\", "\\")
-    query := "Select ProcessId from Win32_Process where Name='pythonw.exe' or Name='python.exe'"
+    escapedExe := StrReplace(dictationExe, "\", "\\")
+    query := "Select ProcessId from Win32_Process where Name='pythonw.exe' or Name='python.exe' or Name='CodexDictation.exe'"
     for proc in ComObjGet("winmgmts:").ExecQuery(query)
     {
         cmd := ""
         try cmd := proc.CommandLine
+        exePath := ""
+        try exePath := proc.ExecutablePath
         if InStr(StrLower(cmd), StrLower(escapedScript)) || InStr(StrLower(cmd), StrLower(dictationScript))
+            return true
+        if InStr(StrLower(cmd), StrLower(escapedExe)) || InStr(StrLower(cmd), StrLower(dictationExe))
+            return true
+        if InStr(StrLower(exePath), StrLower(escapedExe)) || InStr(StrLower(exePath), StrLower(dictationExe))
             return true
     }
     return false
