@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, ctypes, difflib, json, os, queue, sys, tempfile, threading, time, traceback, urllib.error, urllib.request
+import argparse, ctypes, difflib, json, os, queue, re, sys, tempfile, threading, time, traceback, urllib.error, urllib.request
 from ctypes import wintypes
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -8,12 +8,7 @@ from pathlib import Path
 import numpy as np, sounddevice as sd, soundfile as sf, tkinter as tk
 from tkinter import messagebox, ttk
 
-def _runtime_root()->Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
-
-APP_NAME="Codex Dictation"; ROOT=_runtime_root(); APP_PID=os.getpid()
+APP_NAME="Codex Dictation"; ROOT=Path(__file__).resolve().parent; APP_PID=os.getpid()
 SETTINGS_PATH=ROOT/"codex_dictation.settings.json"; HISTORY_PATH=ROOT/"codex_dictation.history.jsonl"; LOG_PATH=ROOT/"codex_dictation.log"
 AI_PREFETCH_CACHE_SIZE=3
 TERMINALS={"windowsterminal.exe","wezterm-gui.exe","conhost.exe","powershell.exe","pwsh.exe","cmd.exe","mintty.exe","alacritty.exe","rio.exe","code.exe","cursor.exe"}
@@ -59,14 +54,6 @@ LANGUAGE_SWITCH_COMMANDS={
 LANGUAGE_UI_LABELS={"auto":"자동","ko":"한국어","en":"영어"}
 LLM_PROFILE_MODELS={"balanced":"gemma3:4b","accurate":"gemma3:12b"}
 LLM_PROFILE_UI_LABELS={"balanced":"균형","accurate":"정확도","custom":"직접지정"}
-AUDIO_PRESET_UI_LABELS={"manual":"직접 조정","quiet":"조용한 방","normal":"보통","noisy":"시끄러운 방"}
-DEFAULT_AUDIO_PRESET="manual"
-AUDIO_PRESET_VALUES={
-    "manual":{},
-    "quiet":{"input_gain":1.35,"noise_gate_threshold":0.003,"voice_trigger_min_rms":0.014,"voice_trigger_ratio":2.0},
-    "normal":{"input_gain":1.0,"noise_gate_threshold":0.006,"voice_trigger_min_rms":0.018,"voice_trigger_ratio":2.2},
-    "noisy":{"input_gain":1.0,"noise_gate_threshold":0.012,"voice_trigger_min_rms":0.03,"voice_trigger_ratio":3.0},
-}
 COMMAND_PROMPT="보내 보내요 보네 보내줘 지워 지어 치워 지워요 다 지워 다 치워 전부 지워 전체 지워 모두 지워 전체 비워 전부 비워 입력창 비워 다시 다시 말해 다시 말해줘 정정 정정해 교정 복사 붙여넣기 붙여 넣기 잘라 잘라내기 취소 되돌려 자동 한국어 영어 최대화 최소화 복원 이스케이프 나가기 일시정지 재생 앞으로 감기 뒤로 감기"
 SINGLE_INSTANCE_MUTEX_NAME="Local\\CodexDictationSingleton"
 _single_instance_handle=None
@@ -98,7 +85,7 @@ DELETE_COUNT_WORDS={
 
 @dataclass
 class Settings:
-    input_device:str=""; sample_rate:int=16000; channels:int=1; input_gain:float=1.0; audio_preset:str=DEFAULT_AUDIO_PRESET; noise_gate_threshold:float=0.0; whisper_model:str="large-v3-turbo"; whisper_device:str="auto"; whisper_compute_type:str="auto"
+    input_device:str=""; sample_rate:int=16000; channels:int=1; input_gain:float=1.0; whisper_model:str="large-v3-turbo"; whisper_device:str="auto"; whisper_compute_type:str="auto"
     language:str="auto"; initial_prompt:str=""; record_hotkey:str="f8"; always_listen_hotkey:str="f7"; paste_last_hotkey:str="f9"
     toggle_output_hotkey:str="f10"; toggle_enter_hotkey:str="f11"; output_mode:str="type"; paste_hotkey:str="ctrl+v"; auto_enter:bool=False
     trim_silence:bool=True; trim_threshold:float=0.008; normalize_whitespace:bool=True; max_record_seconds:int=45; min_record_seconds:float=0.25
@@ -190,19 +177,6 @@ def normalize_llm_profile_value(value:str|None)->str:
 
 def llm_profile_label(value:str|None)->str:
     return LLM_PROFILE_UI_LABELS.get(normalize_llm_profile_value(value),"균형")
-
-def normalize_audio_preset_value(value:str|None)->str:
-    raw=(value or "").strip().lower()
-    aliases={
-        "manual":"manual","직접":"manual","직접조정":"manual","직접 조정":"manual",
-        "quiet":"quiet","조용한방":"quiet","조용한 방":"quiet",
-        "normal":"normal","보통":"normal",
-        "noisy":"noisy","시끄러운방":"noisy","시끄러운 방":"noisy",
-    }
-    return aliases.get(raw,DEFAULT_AUDIO_PRESET)
-
-def audio_preset_label(value:str|None)->str:
-    return AUDIO_PRESET_UI_LABELS.get(normalize_audio_preset_value(value),AUDIO_PRESET_UI_LABELS[DEFAULT_AUDIO_PRESET])
 
 def resolve_llm_model(settings:Settings)->str:
     profile=normalize_llm_profile_value(settings.llm_profile)
@@ -308,30 +282,136 @@ def is_voice_command_text(text:str)->bool:
         return True
     return False
 
+def _postedit_prompt_mode(text:str, language:str)->str:
+    normalized=(text or "").strip()
+    normalized_language=normalize_language_value(language)
+    key="".join(ch for ch in normalized if ch.isalnum())
+    has_hangul=any("\uac00" <= ch <= "\ud7a3" for ch in normalized)
+    has_ascii_word=any(ch.isascii() and ch.isalpha() for ch in normalized)
+    has_digits=any(ch.isdigit() for ch in normalized)
+    code_markers=("/", "\\", "_", "-", "--", "::", "()", "{}", "[]", ".py", ".ts", ".js", "import ", "from ", "class ", "def ")
+    if has_ascii_word or has_digits or any(marker in normalized for marker in code_markers):
+        return "literal"
+    if normalized_language != "en" and has_hangul and len(key) <= 12:
+        return "short_ko"
+    return "general"
+
+def _apply_short_ko_rule_fallback(text:str)->str:
+    corrected=(text or "").strip()
+    if not corrected:
+        return corrected
+    literal_replacements={
+        "사라해":"사랑해",
+        "괜찬아":"괜찮아",
+        "모르겟어":"모르겠어",
+        "미안 한대":"미안한데",
+        "해야 대":"해야 돼",
+        "가도 대":"가도 돼",
+        "아니 라말":"아니라고 말",
+    }
+    if corrected in literal_replacements:
+        return literal_replacements[corrected]
+    pattern_replacements=(
+        (r"아니\s*라말", "아니라고 말"),
+        (r"괜찬", "괜찮"),
+        (r"겟어", "겠어"),
+        (r"드릴깨", "드릴게"),
+        (r"가타", "같아"),
+        (r"봐바", "봐봐"),
+        (r"회이", "회의"),
+        (r"보낸개", "보낸 게"),
+        (r"그얘기", "그 얘기"),
+        (r"이문제", "이 문제"),
+        (r"몇시", "몇 시"),
+        (r"한게", "한 게"),
+        (r"한거", "한 거"),
+        (r"맞는거", "맞는 거"),
+        (r"그런거", "그런 거"),
+        (r"아냐$", "아니야"),
+    )
+    for pattern, replacement in pattern_replacements:
+        corrected=re.sub(pattern, replacement, corrected)
+    corrected=re.sub(r"\s+", " ", corrected).strip()
+    return corrected
+
+def _short_ko_fallback_candidate(text:str, language:str)->str:
+    if _postedit_prompt_mode(text, language)!="short_ko":
+        return ""
+    candidate=_apply_short_ko_rule_fallback(text)
+    if normalize_text(candidate)==normalize_text(text):
+        return ""
+    return candidate
+
 def conservative_postedit_prompt(text:str, language:str, strict:bool=False)->str:
     lang_note={
         "auto":"입력 언어는 한국어 또는 영어일 수 있습니다.",
         "ko":"입력 언어는 한국어입니다.",
         "en":"입력 언어는 영어입니다.",
     }.get(normalize_language_value(language),"입력 언어는 한국어 또는 영어일 수 있습니다.")
+    mode=_postedit_prompt_mode(text, language)
     strict_note=(
-        "- 원문의 단어 순서와 문장 수를 최대한 유지합니다.\n"
-        "- 새 단어를 덧붙이거나 설명을 쓰지 않습니다.\n"
-        "- 확신이 없으면 한 글자도 바꾸지 않습니다.\n"
+        "- 확신이 낮으면 과하게 추측하지 말고 의미를 보존하는 범위에서만 교정합니다.\n"
+        "- 문장을 다시 쓰더라도 원래 의미와 핵심 표현은 유지합니다.\n"
     ) if strict else ""
+    if mode=="literal":
+        return (
+            "너는 STT 후교정 편집기다.\n"
+            f"{lang_note}\n"
+            "입력에 영어, 숫자, 코드, 파일명, 명령어, 고유명사가 섞여 있을 수 있다.\n"
+            "규칙:\n"
+            "- 의미를 바꾸지 마라.\n"
+            "- 새 내용을 추가하지 마라.\n"
+            "- 존댓말, 반말, 말투는 원문과 같게 유지하라.\n"
+            "- 영어, 숫자, 코드, 파일명, 명령어, 고유명사는 원문 그대로 유지하라.\n"
+            "- 한국어 부분의 오타, 띄어쓰기, 조사, 문법만 최소한으로 교정하라.\n"
+            "- 설명 없이 교정 결과만 한 줄로 출력하라.\n\n"
+            f"입력:\n{text}\n"
+        )
+    if mode=="short_ko":
+        return (
+            "너는 한국어 STT 짧은 구절 교정기다.\n"
+            f"{lang_note}\n"
+            "입력은 짧은 음성 인식 결과이며, 발음이 비슷한 오인식, 붙여쓰기/띄어쓰기 오류, 조사 오류, 짧은 오타가 섞여 있을 수 있다.\n"
+            "규칙:\n"
+            "- 의미를 바꾸지 마라.\n"
+            "- 존댓말, 반말, 말투는 원문과 같게 유지하라.\n"
+            "- 오타, 띄어쓰기, 조사, 어색한 문법을 자연스러운 한국어로 적극 교정하라.\n"
+            "- 발음이 비슷한 잘못된 단어는 가장 자연스러운 한국어 표현으로 복원하라.\n"
+            "- 특히 한두 글자 차이의 발음형 오인식은 더 적극적으로 바로잡아라.\n"
+            "- 필요하면 짧게 표현을 다듬어도 되지만 새 사실은 추가하지 마라.\n"
+            "- 의미가 여러 개로 갈리면 가장 자연스럽고 보수적인 결과를 택하라.\n"
+            f"{strict_note}"
+            "- 설명, 따옴표, 접두어 없이 결과만 한 줄로 출력하라.\n\n"
+            "예시:\n"
+            "사라해 -> 사랑해\n"
+            "아니 라말 -> 아니라고 말\n"
+            "괜찬아 -> 괜찮아\n"
+            "해야 대 -> 해야 돼\n"
+            "맞는거 가타 -> 맞는 거 같아\n"
+            "그런거 가타 -> 그런 거 같아\n"
+            "머라 그랬어 -> 뭐라 그랬어\n"
+            "모르겟어 -> 모르겠어\n\n"
+            f"입력:\n{text}\n"
+        )
     return (
-        "당신은 STT 후처리 교정기입니다.\n"
+        "너는 한국어 문장 교정기다.\n"
         f"{lang_note}\n"
-        "아래 원문을 보수적으로만 교정하세요.\n"
+        "입력은 음성 인식 결과일 수 있으며, 발음이 비슷한 오인식, 오타, 띄어쓰기 오류, 조사 오류, 어색한 문법, 부자연스러운 표현이 섞여 있을 수 있다.\n"
+        "목표는 원래 의미를 유지하면서 가장 자연스럽고 읽기 쉬운 한국어 문장으로 교정하는 것이다.\n"
         "규칙:\n"
-        "- 띄어쓰기, 조사, 문장 부호, 명백한 오인식만 고칩니다.\n"
-        "- 뜻을 추정해서 새 내용을 추가하지 않습니다.\n"
-        "- 문장 수를 늘리지 않습니다.\n"
-        "- 요약하거나 재서술하지 않습니다.\n"
-        "- 확신이 없으면 원문을 유지합니다.\n"
+        "- 의미를 바꾸지 마라.\n"
+        "- 새 내용을 추가하지 마라.\n"
+        "- 존댓말, 반말, 말투, 화자의 태도는 원문과 같게 유지하라.\n"
+        "- 오타, 띄어쓰기, 조사, 문법, 어색한 표현은 적극적으로 고쳐라.\n"
+        "- 발음이 비슷한 잘못된 단어는 문맥상 가장 자연스러운 표현으로 고쳐라.\n"
+        "- 필요하면 짧게 문장을 자연스럽게 다듬어도 된다.\n"
+        "- 요약하거나 핵심 정보를 빼지 마라.\n"
+        "- 영어, 숫자, 코드, 파일명, 명령어, 고유명사는 원문 그대로 유지하라.\n"
+        "- 확신이 낮으면 과하게 추측하지 말고 의미 보존을 우선하라.\n"
         f"{strict_note}"
-        "- 설명 없이 교정 결과만 한 줄로 출력합니다.\n\n"
-        f"원문:\n{text}\n"
+        "- 출력은 교정된 최종 문장만 한 줄로 반환하라.\n"
+        "- 설명, 따옴표, 접두어 없이 결과만 출력하라.\n\n"
+        f"입력:\n{text}\n"
     )
 
 def _clean_postedit_output(text:str)->str:
@@ -399,22 +479,23 @@ def postedit_similarity_metrics(original:str, corrected:str)->tuple[float,float]
     return ratio, key_ratio
 
 class OllamaPostEditor:
-    def __init__(self, logger, status_reporter=None):
+    def __init__(self, logger):
         self.log=logger
-        self.report_status=status_reporter or (lambda kind, detail="": None)
     def _request(self,prompt:str,settings:Settings,trace_id:str|None=None)->str:
         trace_prefix=f"{trace_id} | " if trace_id else ""
         base_url=(settings.llm_base_url or "").strip().rstrip("/")
         if not base_url:
-            self.report_status("skipped","base URL 비어 있음")
             self.log(f"{trace_prefix}LLM 교정 건너뜀: base URL 비어 있음")
             return ""
+        model=resolve_llm_model(settings)
         payload={
-            "model":resolve_llm_model(settings),
+            "model":model,
             "prompt":prompt,
             "stream":False,
             "options":{"temperature":0,"top_p":0.05,"num_predict":128,"repeat_penalty":1.2},
         }
+        if model == "gemma4" or model.startswith("gemma4:"):
+            payload["think"]=False
         body=json.dumps(payload,ensure_ascii=False).encode("utf-8")
         req=urllib.request.Request(
             f"{base_url}/api/generate",
@@ -427,28 +508,28 @@ class OllamaPostEditor:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data=json.loads(resp.read().decode("utf-8"))
         except urllib.error.URLError as e:
-            self.report_status("connection_error",str(e))
             self.log(f"{trace_prefix}LLM 교정 건너뜀: {e}")
             return ""
         except Exception as e:
-            self.report_status("request_error",str(e))
             self.log(f"{trace_prefix}LLM 교정 실패: {e}")
             return ""
         return _clean_postedit_output(data.get("response",""))
     def correct(self,text:str,settings:Settings,trace_id:str|None=None)->str:
         if not settings.llm_correction_enabled:
-            self.report_status("disabled","")
             return text
         source=(text or "").strip()
         if not source:
             return text
+        fallback_candidate=_short_ko_fallback_candidate(source, settings.language)
         started=time.perf_counter()
         trace_prefix=f"{trace_id} | " if trace_id else ""
-        self.report_status("request_start","")
         self.log(f"{trace_prefix}LLM 요청 시작")
         corrected=self._request(conservative_postedit_prompt(source, settings.language),settings,trace_id=trace_id)
         if not corrected:
-            self.report_status("empty","")
+            if fallback_candidate:
+                self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s, fallback-short-ko)")
+                self.log(f"{trace_prefix}짧은 한국어 규칙 보정 사용")
+                return fallback_candidate
             self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s, empty)")
             self.log(f"{trace_prefix}LLM 빈 응답 -> 원문 유지")
             return text
@@ -458,18 +539,23 @@ class OllamaPostEditor:
             if retry and should_accept_postedit(source,retry):
                 corrected=retry
                 self.log(f"{trace_prefix}재시도 결과 채택")
+            elif fallback_candidate:
+                self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s, fallback-short-ko)")
+                self.log(f"{trace_prefix}짧은 한국어 규칙 보정 사용")
+                return fallback_candidate
             else:
                 ratio, key_ratio=postedit_similarity_metrics(source, retry or corrected or source)
-                self.report_status("rejected",f"ratio={ratio:.3f}, key_ratio={key_ratio:.3f}")
                 self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s, rejected)")
                 self.log(f"{trace_prefix}결과 거부: diff too large (ratio={ratio:.3f}, key_ratio={key_ratio:.3f}) -> 원문 유지")
                 return text
         if normalize_text(corrected)==normalize_text(source):
-            self.report_status("same","")
+            if fallback_candidate:
+                self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s, fallback-short-ko)")
+                self.log(f"{trace_prefix}짧은 한국어 규칙 보정 사용")
+                return fallback_candidate
             self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s, same)")
             self.log(f"{trace_prefix}결과 동일 -> 원문 유지")
             return text
-        self.report_status("accepted","")
         self.log(f"{trace_prefix}LLM 응답 완료 ({time.perf_counter()-started:.3f}s)")
         self.log(f"{trace_prefix}LLM 결과 채택")
         return corrected
@@ -480,8 +566,6 @@ def load_settings()->Settings:
     data=json.loads(SETTINGS_PATH.read_text(encoding="utf-8")); ok={f.name for f in Settings.__dataclass_fields__.values()}
     settings=Settings(**{k:v for k,v in data.items() if k in ok})
     settings.input_gain=max(float(settings.input_gain),0.0)
-    settings.audio_preset=normalize_audio_preset_value(settings.audio_preset)
-    settings.noise_gate_threshold=max(float(settings.noise_gate_threshold),0.0)
     settings.language=normalize_language_value(settings.language)
     settings.llm_profile=normalize_llm_profile_value(settings.llm_profile)
     return settings
@@ -617,16 +701,6 @@ def apply_input_gain(audio:np.ndarray,gain:float)->np.ndarray:
     if gain==1.0:
         return audio
     return np.clip((audio*gain).astype(np.float32,copy=False),-1.0,1.0).astype(np.float32,copy=False)
-
-def apply_noise_gate(audio:np.ndarray,threshold:float)->np.ndarray:
-    if audio.size==0:
-        return audio
-    threshold=max(float(threshold),0.0)
-    if threshold<=0.0:
-        return audio
-    gated=audio.copy()
-    gated[np.abs(gated)<threshold]=0.0
-    return gated
 
 def normalize_text(text:str)->str: return " ".join(text.replace("\r"," ").replace("\n"," ").split()).strip()
 def initial_prompt_for_commands(settings:Settings)->str:
@@ -843,7 +917,7 @@ class WhisperBackend:
         return " ".join(x.text.strip() for x in segs).strip()
 
 class Recorder:
-    def __init__(self,s:Settings,log): self.s=s; self.log=log; self.stream=None; self.chunks=[]; self.lock=threading.Lock(); self.t0=0.0; self.last_voice=0.0; self.on=False; self.noise_floor=max(self.s.trim_threshold*0.8,0.003); self.last_rms=0.0; self.last_peak=0.0; self.last_threshold=0.0; self.last_voice_detected=False; self.last_updated=0.0
+    def __init__(self,s:Settings,log): self.s=s; self.log=log; self.stream=None; self.chunks=[]; self.lock=threading.Lock(); self.t0=0.0; self.last_voice=0.0; self.on=False; self.noise_floor=max(self.s.trim_threshold*0.8,0.003)
     def start(self):
         if self.on: return
         self.chunks=[]; self.t0=time.monotonic(); self.last_voice=self.t0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003)
@@ -855,26 +929,19 @@ class Recorder:
         self.log(f"Recording stopped: {len(audio)/self.s.sample_rate:.2f}s"); return audio
     def duration(self)->float: return time.monotonic()-self.t0 if self.on else 0.0
     def should_stop(self)->bool: return self.on and self.s.enable_auto_stop and self.duration()>=self.s.min_record_seconds and time.monotonic()-self.last_voice>=self.s.auto_stop_silence_seconds
-    def meter_snapshot(self)->tuple[float,float,float,bool,float]:
-        with self.lock: return self.last_rms,self.last_peak,self.last_threshold,self.last_voice_detected,self.last_updated
     def _cb(self,indata,frames,time_info,status):
         if status: self.log(f"Audio status: {status}")
         mono=apply_input_gain(indata[:,0].copy(),self.s.input_gain)
-        mono=apply_noise_gate(mono,self.s.noise_gate_threshold)
+        with self.lock: self.chunks.append(mono)
         rms=rms_level(mono)
-        peak=float(np.max(np.abs(mono))) if mono.size else 0.0
         threshold=max(self.s.trim_threshold, self.s.voice_trigger_min_rms, self.noise_floor*self.s.voice_trigger_ratio)
-        voice=rms>=threshold
-        with self.lock:
-            self.chunks.append(mono)
-            self.last_rms=rms; self.last_peak=peak; self.last_threshold=threshold; self.last_voice_detected=voice; self.last_updated=time.monotonic()
-        if voice:
+        if rms>=threshold:
             self.last_voice=time.monotonic()
         else:
             self.noise_floor=(self.noise_floor*0.96)+(rms*0.04)
 
 class AlwaysListen:
-    def __init__(self,s:Settings,log,on_audio,target_active): self.s=s; self.log=log; self.on_audio=on_audio; self.target_active=target_active; self.stream=None; self.on=False; self.lock=threading.Lock(); self.pre=deque(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003); self.voice_hits=0; self.last_rms=0.0; self.last_peak=0.0; self.last_threshold=0.0; self.last_voice_detected=False; self.last_updated=0.0
+    def __init__(self,s:Settings,log,on_audio,target_active): self.s=s; self.log=log; self.on_audio=on_audio; self.target_active=target_active; self.stream=None; self.on=False; self.lock=threading.Lock(); self.pre=deque(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003); self.voice_hits=0
     def start(self):
         if self.on: return
         self.reset(); self.stream=sd.InputStream(samplerate=self.s.sample_rate,channels=self.s.channels,dtype="float32",device=resolve_input_device(self.s.input_device),blocksize=max(int(self.s.sample_rate*0.06),512),callback=self._cb); self.stream.start(); self.on=True; self.log("Always-listen started")
@@ -882,9 +949,7 @@ class AlwaysListen:
         if not self.on: return
         self.stream.stop(); self.stream.close(); self.stream=None; self.on=False; self.reset(); self.log("Always-listen stopped")
     def reset(self):
-        with self.lock: self.pre.clear(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003); self.voice_hits=0; self.last_rms=0.0; self.last_peak=0.0; self.last_threshold=0.0; self.last_voice_detected=False; self.last_updated=0.0
-    def meter_snapshot(self)->tuple[float,float,float,bool,float]:
-        with self.lock: return self.last_rms,self.last_peak,self.last_threshold,self.last_voice_detected,self.last_updated
+        with self.lock: self.pre.clear(); self.pre_n=0; self.chunks=[]; self.n=0; self.last_voice=0.0; self.noise_floor=max(self.s.trim_threshold*0.8,0.003); self.voice_hits=0
     def _push_pre(self,mono):
         self.pre.append(mono); self.pre_n+=len(mono); limit=int(self.s.sample_rate*self.s.always_listen_preroll_seconds)
         while self.pre and self.pre_n>limit: self.pre_n-=len(self.pre.popleft())
@@ -894,15 +959,12 @@ class AlwaysListen:
     def _cb(self,indata,frames,time_info,status):
         if status: self.log(f"Always-listen audio status: {status}")
         mono=apply_input_gain(indata[:,0].copy(),self.s.input_gain)
-        mono=apply_noise_gate(mono,self.s.noise_gate_threshold)
         if not self.target_active(): self.reset(); return
         rms=rms_level(mono)
-        peak=float(np.max(np.abs(mono))) if mono.size else 0.0
         threshold=max(self.s.trim_threshold, self.s.voice_trigger_min_rms, self.noise_floor*self.s.voice_trigger_ratio)
         voice=rms>=threshold
         now=time.monotonic()
         with self.lock:
-            self.last_rms=rms; self.last_peak=peak; self.last_threshold=threshold; self.last_voice_detected=voice; self.last_updated=now
             if not self.chunks:
                 self._push_pre(mono)
                 if voice:
@@ -922,7 +984,7 @@ class AlwaysListen:
 
 def doctor(settings:Settings|None=None)->str:
     lines=[f"{APP_NAME} doctor","-"*40,f"Python: {sys.version.split()[0]}",f"Settings: {SETTINGS_PATH}",f"History: {HISTORY_PATH}",f"Log: {LOG_PATH}"]
-    if settings: lines+= [f"Always listen enabled: {settings.always_listen_enabled}",f"Audio preset: {audio_preset_label(settings.audio_preset)} ({normalize_audio_preset_value(settings.audio_preset)})",f"Input gain: {float(settings.input_gain):.2f}",f"Noise gate threshold: {float(settings.noise_gate_threshold):.4f}",f"Language: {language_label(settings.language)} ({normalize_language_value(settings.language)})",f"LLM correction enabled: {settings.llm_correction_enabled}",f"LLM profile: {llm_profile_label(settings.llm_profile)} ({normalize_llm_profile_value(settings.llm_profile)})",f"LLM model: {resolve_llm_model(settings)}",f"LLM base URL: {settings.llm_base_url}"]
+    if settings: lines+= [f"Always listen enabled: {settings.always_listen_enabled}",f"Language: {language_label(settings.language)} ({normalize_language_value(settings.language)})",f"LLM correction enabled: {settings.llm_correction_enabled}",f"LLM profile: {llm_profile_label(settings.llm_profile)} ({normalize_llm_profile_value(settings.llm_profile)})",f"LLM model: {resolve_llm_model(settings)}",f"LLM base URL: {settings.llm_base_url}"]
     try:
         devs=get_input_devices(); lines.append(f"Input devices: {len(devs)}")
         for d in devs[:10]: lines.append(f"  - [{d['index']}] {d['name']} ({d['sample_rate']} Hz)")
@@ -952,28 +1014,24 @@ class App:
         self.s=load_settings()
         if not self.s.input_device: self.s.input_device = default_input_device_name()
         save_settings(self.s)
-        self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.audio_status=tk.StringVar(value="Audio | waiting for input"); self.llm_status=tk.StringVar(value="LLM | 대기"); self.posteditor=OllamaPostEditor(self.log,self._set_llm_status); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
+        self.log_q=queue.Queue(); self.res_q=queue.Queue(); self.jobs=queue.Queue(); self.backend=WhisperBackend(); self.posteditor=OllamaPostEditor(self.log); self.rec=Recorder(self.s,self.log); self.listen=AlwaysListen(self.s,self.log,self.enqueue_audio,self.target_active)
         self.busy=False; self.last=""; self.last_emitted=""; self.last_submitted=False; self.pending_text=""; self.pending_segments=[]; self.last_target=None; self.t=None; self.startup_minimized=False
         self.internal_buffer=""; self.buffer_slots={i:"" for i in range(1,11)}; self.last_paste_payload=""; self.last_replace_state=None
         self.ai_correction_seq=0
         self.ai_prefetch_lock=threading.Lock()
         self.ai_prefetch=AICorrectionPrefetchState()
-        self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","input_gain","noise_gate_threshold","whisper_model","whisper_device","whisper_compute_type","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds","llm_model","llm_base_url","llm_timeout_seconds"]}
-        self.vars["audio_preset"]=tk.StringVar(value=audio_preset_label(self.s.audio_preset))
+        self.vars={k:tk.StringVar(value=str(getattr(self.s,k))) for k in ["input_device","sample_rate","input_gain","whisper_model","whisper_device","whisper_compute_type","initial_prompt","record_hotkey","always_listen_hotkey","paste_last_hotkey","toggle_output_hotkey","toggle_enter_hotkey","output_mode","paste_hotkey","max_record_seconds","auto_stop_silence_seconds","always_listen_preroll_seconds","llm_model","llm_base_url","llm_timeout_seconds"]}
         self.vars["language"]=tk.StringVar(value=language_label(self.s.language))
         self.vars["llm_profile"]=tk.StringVar(value=llm_profile_label(self.s.llm_profile))
         self.bools={k:tk.BooleanVar(value=getattr(self.s,k)) for k in ["auto_enter","trim_silence","normalize_whitespace","beep_feedback","keep_window_on_top","enable_auto_stop","always_listen_enabled","llm_correction_enabled"]}
         self.status=tk.StringVar(value="Idle"); self.target=tk.StringVar(value="")
-        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self._sync_llm_status_idle(); self.root.after(20,self.ensure_window_visible_on_startup); self.root.after(50,self.bootstrap_after_launch); self.root.after(80,self.poll); self.root.after(120,self.poll_record); self.root.after(120,self.poll_diagnostics); self.root.after(150,self.poll_target)
+        self.devices=[d["name"] for d in get_input_devices()]; self._ui(); self.refresh_target(); self.refresh_status("Starting"); self.root.after(20,self.ensure_window_visible_on_startup); self.root.after(50,self.bootstrap_after_launch); self.root.after(80,self.poll); self.root.after(120,self.poll_record); self.root.after(150,self.poll_target)
     def _ui(self):
         self.root.columnconfigure(0,weight=1); self.root.rowconfigure(3,weight=1); head=ttk.Frame(self.root,padding=12); head.grid(row=0,column=0,sticky="ew"); head.columnconfigure(1,weight=1)
         ttk.Label(head,text=APP_NAME,font=("Segoe UI",18,"bold")).grid(row=0,column=0,sticky="w"); ttk.Label(head,textvariable=self.status,font=("Segoe UI",10,"bold")).grid(row=0,column=1,sticky="e"); ttk.Label(head,textvariable=self.target).grid(row=1,column=0,columnspan=2,sticky="w",pady=(6,0)); ttk.Label(head,text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 전체 비워, 다시 ..., 복사, 붙여넣기, 잘라, 취소, 되돌려, 자동/한국어/영어, 최대화/최소화/복원, 이스케이프/나가기, 일시정지/재생, 앞으로/뒤로 감기").grid(row=2,column=0,columnspan=2,sticky="w",pady=(6,0))
-        ttk.Label(head,textvariable=self.audio_status,font=("Consolas",9)).grid(row=3,column=0,columnspan=2,sticky="w",pady=(8,0))
-        ttk.Label(head,textvariable=self.llm_status,font=("Consolas",9)).grid(row=4,column=0,columnspan=2,sticky="w",pady=(4,0))
         top=ttk.Frame(self.root,padding=(12,0,12,0)); top.grid(row=1,column=0,sticky="nsew"); top.columnconfigure((0,1),weight=1); left=ttk.LabelFrame(top,text="Recording",padding=12); right=ttk.LabelFrame(top,text="Output, Target, Hotkeys",padding=12); left.grid(row=0,column=0,sticky="nsew",padx=(0,6)); right.grid(row=0,column=1,sticky="nsew",padx=(6,0))
-        self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._entry(left,"Input Gain","input_gain",2); self._combo(left,"Audio Preset","audio_preset",[audio_preset_label(k) for k in AUDIO_PRESET_UI_LABELS],3); self._entry(left,"Noise Gate Threshold","noise_gate_threshold",4); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],5); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],6); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],7); self._combo(left,"Language","language",["자동","한국어","영어"],8); self._entry(left,"Initial Prompt","initial_prompt",9); self._entry(left,"Max Record Seconds","max_record_seconds",10); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",11); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",12)
-        self._check(left,"Trim leading and trailing silence","trim_silence",13); self._check(left,"Normalize whitespace","normalize_whitespace",14); self._check(left,"Enable manual mode auto stop","enable_auto_stop",15); self._check(left,"Play feedback beeps","beep_feedback",16); self._check(left,"Keep window on top","keep_window_on_top",17)
-        ttk.Button(left,text="Apply Audio Preset",command=self.apply_audio_preset).grid(row=18,column=0,columnspan=2,sticky="ew",pady=(12,0))
+        self._combo(left,"Input Device","input_device",self.devices,0); self._entry(left,"Sample Rate","sample_rate",1); self._entry(left,"Input Gain","input_gain",2); self._combo(left,"Whisper Model","whisper_model",["tiny","base","small","medium","large-v3-turbo"],3); self._combo(left,"Whisper Device","whisper_device",["auto","cpu","cuda"],4); self._combo(left,"Compute Type","whisper_compute_type",["auto","int8","int8_float16","float16","float32"],5); self._combo(left,"Language","language",["자동","한국어","영어"],6); self._entry(left,"Initial Prompt","initial_prompt",7); self._entry(left,"Max Record Seconds","max_record_seconds",8); self._entry(left,"Speech End Silence Seconds","auto_stop_silence_seconds",9); self._entry(left,"Always Listen Pre-roll Seconds","always_listen_preroll_seconds",10)
+        self._check(left,"Trim leading and trailing silence","trim_silence",11); self._check(left,"Normalize whitespace","normalize_whitespace",12); self._check(left,"Enable manual mode auto stop","enable_auto_stop",13); self._check(left,"Play feedback beeps","beep_feedback",14); self._check(left,"Keep window on top","keep_window_on_top",15)
         self._combo(right,"Output Mode","output_mode",["paste","clipboard","type"],0); self._entry(right,"Paste Hotkey","paste_hotkey",1); self._check(right,"Press Enter after output","auto_enter",2); self._check(right,"Always listen when target input window is focused","always_listen_enabled",3); self._entry(right,"Always Listen Hotkey","always_listen_hotkey",4); self._entry(right,"Record Hotkey","record_hotkey",5); self._entry(right,"Paste Last Hotkey","paste_last_hotkey",6); self._entry(right,"Toggle Output Hotkey","toggle_output_hotkey",7); self._entry(right,"Toggle Enter Hotkey","toggle_enter_hotkey",8); self._check(right,"Enable local LLM correction command","llm_correction_enabled",9); self._combo(right,"LLM Profile","llm_profile",["균형","정확도","직접지정"],10); self._entry(right,"LLM Model","llm_model",11); self._entry(right,"LLM Base URL","llm_base_url",12); self._entry(right,"LLM Timeout Seconds","llm_timeout_seconds",13)
         btn=ttk.Frame(right); btn.grid(row=13,column=0,columnspan=2,sticky="ew",pady=(14,0)); [btn.columnconfigure(i,weight=1) for i in range(3)]
         for r,c,text,cmd in [(0,0,"Start / Stop Manual",self.toggle_recording),(0,1,"Toggle Always Listen",self.toggle_always_listen),(0,2,"Paste Last",self.paste_last),(1,0,"Save Settings",self.save_from_ui),(1,1,"Doctor",self.show_doctor),(1,2,"Refresh Hotkeys",self.register_hotkeys),(2,0,"Copy Last",self.copy_last)]:
@@ -986,46 +1044,6 @@ class App:
     def log(self,msg):
         append_app_log(msg)
         self.log_q.put(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-    def _llm_status_text(self,kind:str,detail:str="")->str:
-        brief=short_log_text(detail, limit=72) if detail else ""
-        status_map={
-            "disabled":"LLM | 비활성",
-            "request_start":f"LLM | 요청 중 ({llm_profile_label(self.s.llm_profile)})",
-            "skipped":f"LLM | 설정 문제: {brief or '요청 건너뜀'}",
-            "connection_error":f"LLM | 연결 실패: {brief or '응답 없음'}",
-            "request_error":f"LLM | 요청 실패: {brief or '오류'}",
-            "empty":"LLM | 빈 응답, 원문 유지",
-            "rejected":f"LLM | 수정 폭 과다, 원문 유지 ({brief})" if brief else "LLM | 수정 폭 과다, 원문 유지",
-            "same":"LLM | 동일 결과, 원문 유지",
-            "accepted":"LLM | 교정안 생성됨",
-            "applied":"LLM | 교정 적용 완료",
-            "apply_failed":"LLM | 교정 적용 실패",
-        }
-        return status_map.get(kind,self.llm_status.get())
-    def _set_stringvar_safe(self,var:tk.StringVar,value:str):
-        def apply():
-            try:
-                var.set(value)
-            except tk.TclError:
-                pass
-        try:
-            self.root.after(0,apply)
-        except tk.TclError:
-            pass
-    def _sync_llm_status_idle(self):
-        self._set_stringvar_safe(self.llm_status,"LLM | 비활성" if not self.s.llm_correction_enabled else f"LLM | 대기 ({llm_profile_label(self.s.llm_profile)})")
-    def _set_llm_status(self,kind:str,detail:str=""):
-        self._set_stringvar_safe(self.llm_status,self._llm_status_text(kind,detail))
-    def apply_audio_preset(self):
-        preset=normalize_audio_preset_value(self.vars["audio_preset"].get())
-        self.s.audio_preset=preset
-        self.vars["audio_preset"].set(audio_preset_label(preset))
-        values=AUDIO_PRESET_VALUES.get(preset,{})
-        for key,value in values.items():
-            setattr(self.s,key,value)
-            if key in self.vars:
-                self.vars[key].set(str(value))
-        save_settings(self.s); self.rec.s=self.s; self.listen.s=self.s; self.refresh_status(); self.refresh_audio_status(); self.log(f"Audio preset applied: {audio_preset_label(preset)}")
     def next_ai_correction_trace(self)->str:
         self.ai_correction_seq += 1
         return f"AI-CORR-{self.ai_correction_seq:04d}"
@@ -1135,11 +1153,6 @@ class App:
                 self.ai_prefetch=AICorrectionPrefetchState(entries=list(current.entries),job_id=job_id)
                 self.log(f"{trace_id} | 정정 후보 없음")
     def refresh_status(self,activity="Idle"): self.status.set(f"{activity} | {self.s.output_mode.upper()} | {language_label(self.s.language)}{' | LLM '+llm_profile_label(self.s.llm_profile) if self.s.llm_correction_enabled else ''}{' + ENTER' if self.s.auto_enter else ''}{' | ALWAYS-ON' if self.listen.on else ''}")
-    def refresh_audio_status(self):
-        source="manual" if self.rec.on else ("always-listen" if self.listen.on else "idle")
-        rms,peak,threshold,voice,updated=(self.rec.meter_snapshot() if self.rec.on else self.listen.meter_snapshot())
-        waiting="waiting for input" if updated<=0 else f"rms={rms:.4f} | peak={peak:.4f} | threshold={threshold:.4f} | voice={'yes' if voice else 'no'}"
-        self.audio_status.set(f"Audio | source={source} | preset={audio_preset_label(self.s.audio_preset)} | gain={self.s.input_gain:.2f} | gate={self.s.noise_gate_threshold:.3f} | {waiting}")
     def refresh_target(self): self.target.set("Target: focused terminal or input field")
     def bootstrap_after_launch(self):
         self.minimize_after_startup()
@@ -1184,9 +1197,6 @@ class App:
             if k=="language":
                 setattr(self.s,k,normalize_language_value(raw))
                 self.vars["language"].set(language_label(self.s.language))
-            elif k=="audio_preset":
-                setattr(self.s,k,normalize_audio_preset_value(raw))
-                self.vars["audio_preset"].set(audio_preset_label(self.s.audio_preset))
             elif k=="llm_profile":
                 setattr(self.s,k,normalize_llm_profile_value(raw))
                 self.vars["llm_profile"].set(llm_profile_label(self.s.llm_profile))
@@ -1194,11 +1204,9 @@ class App:
             elif isinstance(cur,float): setattr(self.s,k,float(raw or "0"))
             else: setattr(self.s,k,raw)
         self.s.input_gain=max(float(self.s.input_gain),0.0)
-        self.s.noise_gate_threshold=max(float(self.s.noise_gate_threshold),0.0)
         self.vars["input_gain"].set(str(self.s.input_gain))
-        self.vars["noise_gate_threshold"].set(str(self.s.noise_gate_threshold))
         for k,v in self.bools.items(): setattr(self.s,k,bool(v.get()))
-        save_settings(self.s); self.rec.s=self.s; self.listen.s=self.s; self.root.attributes("-topmost",self.s.keep_window_on_top); self.refresh_target(); self.refresh_status(); self.refresh_audio_status(); self._sync_llm_status_idle(); self.log("Settings saved")
+        save_settings(self.s); self.rec.s=self.s; self.listen.s=self.s; self.root.attributes("-topmost",self.s.keep_window_on_top); self.refresh_target(); self.refresh_status(); self.log("Settings saved")
     def register_hotkeys(self):
         self.save_from_ui()
         try: import keyboard
@@ -1764,7 +1772,6 @@ class App:
                             self.log(f"{trace_id} | 백그라운드 정정 후보 완료 후 재사용")
         if prefetched_outcome=="same":
             self._update_latest_transcript(source)
-            self._set_llm_status("same","")
             self.log(f"{trace_id} | 결과 동일 -> 원문 유지")
             return True
         if not corrected:
@@ -1775,16 +1782,13 @@ class App:
         self.log(f"{trace_id} | LLM 결과 수신: {short_log_text(corrected)}")
         if normalize_text(corrected)==normalize_text(source):
             self._update_latest_transcript(source)
-            self._set_llm_status("same","")
             self.log(f"{trace_id} | 결과 동일 -> 원문 유지")
             return True
         self.log(f"{trace_id} | 결과 검증 통과 -> 교체 진행")
         ok=self._apply_ai_correction_target(target,corrected,trace_id=trace_id)
         if ok:
-            self._set_llm_status("applied","")
             self.log(f"{trace_id} | 정정 완료")
         else:
-            self._set_llm_status("apply_failed","")
             self.log(f"{trace_id} | 정정 실패 -> 원문 유지/복구 확인 필요")
         return ok
     def _command_key(self,text:str)->str:
@@ -1922,9 +1926,6 @@ class App:
             if d>=self.s.max_record_seconds: self.log("Max recording length reached"); self.stop_recording()
             elif self.rec.should_stop(): self.log("Silence timeout reached"); self.stop_recording()
         self.root.after(120,self.poll_record)
-    def poll_diagnostics(self):
-        self.refresh_audio_status()
-        self.root.after(120,self.poll_diagnostics)
     def poll_target(self):
         active=self.target_active()
         if active!=self.last_target: self.last_target=active; self.log("Target window active" if active else "Target window inactive")
