@@ -36,7 +36,8 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.posteditor = OllamaPostEditor(self.log, self._set_llm_status)
         self.rec = Recorder(self.s, self.log)
         self.listen = AlwaysListen(self.s, self.log, self.enqueue_audio, self.target_active)
-        self.busy = False
+        self.transcribing = False
+        self.active_transcription_source = ""
         self.last = ""
         self.last_emitted = ""
         self.last_emitted_context = None
@@ -46,7 +47,6 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.pending_context = None
         self.last_target = None
         self.last_target_context = None
-        self.t = None
         self.startup_minimized = False
         self.internal_buffer = ""
         self.buffer_slots = {i: "" for i in range(1, 11)}
@@ -55,6 +55,8 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.ai_correction_seq = 0
         self.ai_prefetch_lock = threading.Lock()
         self.ai_prefetch = AICorrectionPrefetchState()
+        self.transcription_worker = threading.Thread(target=self._transcription_loop, daemon=True)
+        self.transcription_worker.start()
         self.vars = {key: tk.StringVar(value=str(getattr(self.s, key))) for key in [
             "input_device",
             "sample_rate",

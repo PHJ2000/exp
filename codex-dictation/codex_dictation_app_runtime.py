@@ -20,11 +20,20 @@ from codex_dictation_utils import append_history, normalize_text
 
 class AppRuntimeMixin:
     def refresh_status(self, activity="Idle"):
+        queue_depth = self.jobs.qsize()
+        pipeline_parts = []
+        if self.transcribing:
+            source_label = self.active_transcription_source.replace("_", "-") if self.active_transcription_source else "active"
+            pipeline_parts.append(f"STT {source_label}")
+        if queue_depth > 0:
+            pipeline_parts.append(f"QUEUE {queue_depth}")
+        pipeline_suffix = f" | {' | '.join(pipeline_parts)}" if pipeline_parts else ""
         self.status.set(
             f"{activity} | {self.s.output_mode.upper()} | {language_label(self.s.language)}"
             f"{' | LLM ' + llm_profile_label(self.s.llm_profile) if self.s.llm_correction_enabled else ''}"
             f"{' + ENTER' if self.s.auto_enter else ''}"
             f"{' | ALWAYS-ON' if self.listen.on else ''}"
+            f"{pipeline_suffix}"
         )
 
     def refresh_audio_status(self):
@@ -180,9 +189,6 @@ class AppRuntimeMixin:
         if self.listen.on:
             self.log("Manual recording is disabled while always-listen is running")
             return
-        if self.busy:
-            self.log("Busy transcribing, wait a moment")
-            return
         if self.rec.on:
             self.stop_recording()
         else:
@@ -210,44 +216,49 @@ class AppRuntimeMixin:
         if duration < self.s.min_record_seconds:
             self.log(f"Ignored {source} audio because it was too short")
             return
-        if self.s.trim_silence:
-            trimmed = trim_silence(audio, self.s.trim_threshold)
-            if trimmed.size:
-                audio = trimmed
-        if self.busy:
-            self.jobs.put((audio, source))
-            self.log(f"Queued {source} audio while another transcription is running")
-            return
-        self.busy = True
-        self.refresh_status("Transcribing")
-        self.t = threading.Thread(target=self._worker, args=(audio, source), daemon=True)
-        self.t.start()
+        self.jobs.put((audio, source))
+        queue_depth = self.jobs.qsize()
+        if self.transcribing or queue_depth > 1:
+            self.log(f"Queued {source} audio for background transcription ({queue_depth} waiting)")
+        self.refresh_status("Queued")
 
-    def _worker(self, audio, source):
-        started = time.perf_counter()
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
-                path = Path(handle.name)
-            sf.write(path, audio, self.s.sample_rate)
-            raw_text = self.backend.transcribe(path, self.s)
-            raw_text = normalize_text(raw_text) if self.s.normalize_whitespace else raw_text
-            self.res_q.put(("done", {"text": raw_text, "raw_text": raw_text, "elapsed": time.perf_counter() - started, "audio_seconds": len(audio) / self.s.sample_rate, "source": source}))
-        except Exception as exc:
-            self.res_q.put(("error", "".join(traceback.format_exception(exc))))
-        finally:
+    def _transcription_loop(self):
+        while True:
+            audio, source = self.jobs.get()
+            started = time.perf_counter()
+            path = None
             try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-    def _next(self):
-        if self.busy:
-            return
-        try:
-            audio, source = self.jobs.get_nowait()
-        except queue.Empty:
-            return
-        self.queue_audio(audio, source)
+                self.res_q.put(("started", {"source": source}))
+                if self.s.trim_silence:
+                    trimmed = trim_silence(audio, self.s.trim_threshold)
+                    if trimmed.size:
+                        audio = trimmed
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+                    path = Path(handle.name)
+                sf.write(path, audio, self.s.sample_rate)
+                raw_text = self.backend.transcribe(path, self.s)
+                raw_text = normalize_text(raw_text) if self.s.normalize_whitespace else raw_text
+                self.res_q.put(
+                    (
+                        "done",
+                        {
+                            "text": raw_text,
+                            "raw_text": raw_text,
+                            "elapsed": time.perf_counter() - started,
+                            "audio_seconds": len(audio) / self.s.sample_rate,
+                            "source": source,
+                        },
+                    )
+                )
+            except Exception as exc:
+                self.res_q.put(("error", {"source": source, "traceback": "".join(traceback.format_exception(exc))}))
+            finally:
+                if path is not None:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                self.jobs.task_done()
 
     def warmup_model(self):
         started = time.perf_counter()
@@ -287,20 +298,23 @@ class AppRuntimeMixin:
                 kind, payload = self.res_q.get_nowait()
                 if kind == "captured":
                     self.queue_audio(payload["audio"], payload["source"])
+                elif kind == "started":
+                    self.transcribing = True
+                    self.active_transcription_source = payload["source"]
+                    self.refresh_status("Transcribing")
                 elif kind == "done":
-                    self.busy = False
+                    self.transcribing = False
+                    self.active_transcription_source = ""
                     self.refresh_status()
                     if not payload["text"]:
                         self.beep("error")
                         self.log(f"No speech detected from {payload['source']}")
-                        self._next()
                         continue
                     if self.is_voice_command_text(payload["text"]):
                         if self.handle_voice_command(payload["text"]):
                             self.beep("done")
                         else:
                             self.beep("error")
-                        self._next()
                         continue
                     self._update_latest_transcript(payload["text"])
                     append_history(
@@ -316,14 +330,13 @@ class AppRuntimeMixin:
                     self.emit_text(self.last)
                     self.beep("done")
                     self.log(f"Transcript ready from {payload['source']} in {float(payload['elapsed']):.2f}s for {float(payload['audio_seconds']):.2f}s audio")
-                    self._next()
                 elif kind == "error":
-                    self.busy = False
+                    self.transcribing = False
+                    self.active_transcription_source = ""
                     self.refresh_status()
                     self.beep("error")
-                    self.log("Transcription failed")
-                    self.log(payload)
-                    self._next()
+                    self.log(f"Transcription failed for {payload['source']}")
+                    self.log(payload["traceback"])
         except queue.Empty:
             pass
         self.root.after(80, self.poll)
