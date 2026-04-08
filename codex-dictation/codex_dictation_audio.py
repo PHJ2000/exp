@@ -178,6 +178,8 @@ class AlwaysListen:
         self.pre_n = 0
         self.chunks = []
         self.n = 0
+        self.trailing_silence = deque()
+        self.trailing_silence_n = 0
         self.last_voice = 0.0
         self.noise_floor = max(self.s.trim_threshold * 0.8, 0.003)
         self.voice_hits = 0
@@ -219,6 +221,8 @@ class AlwaysListen:
             self.pre_n = 0
             self.chunks = []
             self.n = 0
+            self.trailing_silence.clear()
+            self.trailing_silence_n = 0
             self.last_voice = 0.0
             self.noise_floor = max(self.s.trim_threshold * 0.8, 0.003)
             self.voice_hits = 0
@@ -235,18 +239,53 @@ class AlwaysListen:
     def _push_pre(self, mono):
         self.pre.append(mono)
         self.pre_n += len(mono)
-        limit = int(self.s.sample_rate * self.s.always_listen_preroll_seconds)
+        # Always-listen tends to clip weak first syllables, so keep a slightly
+        # larger minimum pre-roll even when the configured value is small.
+        limit = int(self.s.sample_rate * max(self.s.always_listen_preroll_seconds, 0.45))
         while self.pre and self.pre_n > limit:
             self.pre_n -= len(self.pre.popleft())
 
-    def _finalize(self):
+    def _tail_padding_seconds(self) -> float:
+        # Keep a small amount of post-voice tail so weak final syllables or
+        # 받침-like endings are less likely to be cut off with the silence.
+        return 0.18
+
+    def _finalize(self, drop_trailing: int = 0):
         if not self.chunks:
             return
-        audio = np.concatenate(self.chunks).astype(np.float32)
+        kept_chunks = self.chunks[:-drop_trailing] if drop_trailing > 0 else list(self.chunks)
+        if not kept_chunks:
+            self.chunks = []
+            self.n = 0
+            self.trailing_silence.clear()
+            self.trailing_silence_n = 0
+            self.last_voice = 0.0
+            return
+        segments = [np.concatenate(kept_chunks).astype(np.float32)]
+        if drop_trailing > 0:
+            trailing_chunks = self.chunks[-drop_trailing:]
+            keep_tail_samples = int(self.s.sample_rate * self._tail_padding_seconds())
+            if keep_tail_samples > 0 and trailing_chunks:
+                trailing_audio = np.concatenate(trailing_chunks).astype(np.float32)
+                if trailing_audio.size:
+                    tail = trailing_audio[-keep_tail_samples:]
+                    if tail.size:
+                        segments.append(tail)
+        audio = np.concatenate(segments).astype(np.float32)
         self.chunks = []
         self.n = 0
+        self.trailing_silence.clear()
+        self.trailing_silence_n = 0
         self.last_voice = 0.0
         self.on_audio(audio, "always_listen")
+
+    def _split_silence_seconds(self) -> float:
+        # Keep separation responsive enough for queued async use while still
+        # avoiding ultra-short accidental splits.
+        return max(float(self.s.auto_stop_silence_seconds), 0.65)
+
+    def _min_split_duration_seconds(self) -> float:
+        return max(float(self.s.min_record_seconds), 0.3)
 
     def _cb(self, indata, frames, time_info, status):
         if status:
@@ -283,11 +322,45 @@ class AlwaysListen:
                     self.voice_hits = 0
                     self.log(f"Voice detected in target window (rms={rms:.4f}, threshold={threshold:.4f})")
             else:
-                self.chunks.append(mono)
-                self.n += len(mono)
+                sample_rate = max(self.s.sample_rate, 1)
+                split_silence = self._split_silence_seconds()
+                min_split_duration = self._min_split_duration_seconds()
                 if voice:
+                    gap_duration = self.trailing_silence_n / sample_rate
+                    active_duration = max((self.n - self.trailing_silence_n) / sample_rate, 0.0)
+                    if self.trailing_silence and gap_duration >= split_silence and active_duration >= min_split_duration:
+                        carry_chunks = list(self.trailing_silence)
+                        carry_n = self.trailing_silence_n
+                        self.log(
+                            f"Always-listen split after {gap_duration:.2f}s silence "
+                            f"(active={active_duration:.2f}s)"
+                        )
+                        self._finalize(drop_trailing=len(carry_chunks))
+                        self.chunks = carry_chunks
+                        self.n = carry_n
+                    self.trailing_silence.clear()
+                    self.trailing_silence_n = 0
+                    self.chunks.append(mono)
+                    self.n += len(mono)
                     self.last_voice = now
                 else:
+                    self.chunks.append(mono)
+                    self.n += len(mono)
+                    self.trailing_silence.append(mono)
+                    self.trailing_silence_n += len(mono)
                     self.noise_floor = (self.noise_floor * 0.98) + (rms * 0.02)
-                if self.n / max(self.s.sample_rate, 1) >= self.s.max_record_seconds or now - self.last_voice >= self.s.auto_stop_silence_seconds:
-                    self._finalize()
+                total_duration = self.n / sample_rate
+                active_duration = max((self.n - self.trailing_silence_n) / sample_rate, 0.0)
+                gap_duration = self.trailing_silence_n / sample_rate
+                if total_duration >= self.s.max_record_seconds:
+                    self._finalize(drop_trailing=len(self.trailing_silence))
+                elif (
+                    self.trailing_silence
+                    and active_duration >= min_split_duration
+                    and gap_duration >= split_silence
+                ):
+                    self.log(
+                        f"Always-listen finalized after {gap_duration:.2f}s silence "
+                        f"(active={active_duration:.2f}s)"
+                    )
+                    self._finalize(drop_trailing=len(self.trailing_silence))

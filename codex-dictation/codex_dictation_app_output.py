@@ -370,6 +370,7 @@ class AppOutputMixin:
         except Exception as exc:
             self.log(f"Output hotkeys unavailable: {exc}")
             return False
+        self.output_grace_until = max(getattr(self, "output_grace_until", 0.0), time.monotonic() + 1.0)
         sent_enter = self.s.auto_enter if press_enter is None else press_enter
         info = fg_info()
         current_context = self._current_target_context(info)
@@ -405,6 +406,7 @@ class AppOutputMixin:
             except Exception as exc:
                 self.log(f"Output enter failed: {exc}")
                 return False
+        self.output_grace_until = max(getattr(self, "output_grace_until", 0.0), time.monotonic() + 0.75)
         if remember:
             self._remember_output_payload(payload, sent_enter=sent_enter, target_context=current_context)
         self.log(f"Transcript sent via {self.s.output_mode}")

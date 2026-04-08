@@ -216,6 +216,10 @@ class AppRuntimeMixin:
         if duration < self.s.min_record_seconds:
             self.log(f"Ignored {source} audio because it was too short")
             return
+        if self.s.trim_silence and source != "always_listen":
+            trimmed = trim_silence(audio, self.s.trim_threshold)
+            if trimmed.size:
+                audio = trimmed
         self.jobs.put((audio, source))
         queue_depth = self.jobs.qsize()
         if self.transcribing or queue_depth > 1:
@@ -229,10 +233,6 @@ class AppRuntimeMixin:
             path = None
             try:
                 self.res_q.put(("started", {"source": source}))
-                if self.s.trim_silence:
-                    trimmed = trim_silence(audio, self.s.trim_threshold)
-                    if trimmed.size:
-                        audio = trimmed
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
                     path = Path(handle.name)
                 sf.write(path, audio, self.s.sample_rate)
@@ -362,8 +362,18 @@ class AppRuntimeMixin:
         active = is_target_window(info)
         context = target_context_key(info) if active else None
         if self.pending_text and self.pending_context and context != self.pending_context:
-            self._clear_pending_state(clear_last_emitted=False, clear_last_submitted=False)
-            self.log("Pending input cleared: focused input context changed")
+            now = time.monotonic()
+            if now >= getattr(self, "output_grace_until", 0.0):
+                if not getattr(self, "pending_context_mismatch_since", 0.0):
+                    self.pending_context_mismatch_since = now
+                elif now - self.pending_context_mismatch_since >= 0.45:
+                    self._clear_pending_state(clear_last_emitted=False, clear_last_submitted=False)
+                    self.pending_context_mismatch_since = 0.0
+                    self.log("Pending input cleared: focused input context changed")
+            else:
+                self.pending_context_mismatch_since = 0.0
+        else:
+            self.pending_context_mismatch_since = 0.0
         if active != self.last_target:
             self.last_target = active
             self.log("Target window active" if active else "Target window inactive")

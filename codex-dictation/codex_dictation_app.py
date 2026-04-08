@@ -45,6 +45,8 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.pending_text = ""
         self.pending_segments = []
         self.pending_context = None
+        self.pending_context_mismatch_since = 0.0
+        self.output_grace_until = 0.0
         self.last_target = None
         self.last_target_context = None
         self.startup_minimized = False
