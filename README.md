@@ -59,9 +59,21 @@ Codex CLI에 붙여 쓰는 Windows용 로컬 받아쓰기 프로젝트입니다.
 ## 브랜치 규칙
 
 - 작업 브랜치는 가능한 한 이슈를 먼저 만든 뒤 생성합니다.
-- 일반 작업 브랜치는 `issue-{번호}-{짧은-설명}` 형식을 사용합니다.
-- Codex가 만드는 작업 브랜치는 `codex/issue-{번호}-{짧은-설명}` 형식을 사용합니다.
-- 브랜치 이름만 봐도 어떤 이슈를 위한 작업인지 바로 추적할 수 있어야 합니다.
+- 브랜치 이름은 `타입/issue-{번호}/{작업폴더}-{짧은-설명}` 형식을 기본으로 사용합니다.
+- `타입`은 아래 중 하나를 우선 사용합니다.
+  - `feat`: 기능 추가나 사용자 동작 변화가 있는 작업
+  - `bug`: 버그 수정, 회귀 수정, 오동작 보정
+  - `docs`: 문서 수정
+  - `chore`: 설정, 정리, 운영성 작업
+- `작업폴더`는 실제로 가장 많이 바뀌는 폴더 이름을 넣습니다.
+  - 예: `codex-dictation`, `experiments`, `tools`, `repo`
+- 여러 폴더를 같이 건드려도 브랜치에는 대표 폴더 하나만 넣고, 공통 작업이면 `repo`를 사용합니다.
+- 브랜치 이름만 봐도 어떤 이슈인지, 어떤 성격의 작업인지, 주로 어디를 만지는 작업인지 바로 추적할 수 있어야 합니다.
+- 예시는 아래와 같습니다.
+  - `bug/issue-29/codex-dictation-path-sanitization`
+  - `docs/issue-30/repo-branch-convention`
+  - `feat/issue-31/codex-dictation-always-listen-improvement`
+  - `chore/issue-32/tools-log-cleanup`
 
 ## 다음 머지 기준
 
