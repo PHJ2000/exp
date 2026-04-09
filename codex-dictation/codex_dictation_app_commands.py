@@ -102,23 +102,24 @@ class AppCommandActionsMixin:
         return ok
 
     def _get_ai_correction_target(self) -> CorrectionTarget | None:
+        state = self.output_state
         info = fg_info()
         if info and has_precise_text_focus(info) and not is_terminal(info):
             selected = self._capture_selection_text(self._copy_hotkeys())
             if selected and selected.strip():
                 return CorrectionTarget("selection", selected.strip())
         current_context = self._current_target_context(info)
-        if self.last_emitted_context and current_context == self.last_emitted_context:
-            source = self.last_emitted.strip()
+        if state.last_emitted_context and current_context == state.last_emitted_context:
+            source = state.last_emitted.strip()
             if source:
                 return CorrectionTarget("last", source)
         self._clear_stale_pending_if_needed(info, reason="pending target no longer matches focused input")
-        if self.pending_text and not self.last_submitted and (not self.pending_context or self.pending_context == current_context):
-            source = self.pending_text.strip()
+        if state.pending_text and not state.last_submitted and (not state.pending_context or state.pending_context == current_context):
+            source = state.pending_text.strip()
             if source:
                 return CorrectionTarget("pending", source)
-        source = self.last_emitted.strip()
-        if source and not self.last_emitted_context:
+        source = state.last_emitted.strip()
+        if source and not state.last_emitted_context:
             return CorrectionTarget("last", source)
         return None
 
