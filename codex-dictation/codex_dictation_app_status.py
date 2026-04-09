@@ -134,10 +134,11 @@ class AppStatusMixin:
         )
 
     def _schedule_ai_prefetch_for_pending(self):
-        if not self.s.llm_correction_enabled or self.last_submitted:
+        state = self.output_state
+        if not self.s.llm_correction_enabled or state.last_submitted:
             self._invalidate_ai_prefetch()
             return
-        source = self.pending_text.strip()
+        source = state.pending_text.strip()
         if not source:
             self._invalidate_ai_prefetch()
             return

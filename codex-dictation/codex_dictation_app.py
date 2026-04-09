@@ -9,6 +9,7 @@ from codex_dictation_audio import AlwaysListen, Recorder, default_input_device_n
 from codex_dictation_app_actions import AppActionsMixin
 from codex_dictation_app_runtime import AppRuntimeMixin
 from codex_dictation_app_ui import AppUIMixin
+from codex_dictation_output_state import OutputState
 from codex_dictation_postedit import AICorrectionPrefetchState, OllamaPostEditor
 from codex_dictation_settings import APP_NAME, audio_preset_label, language_label, llm_profile_label, load_settings, save_settings
 from codex_dictation_targeting import WinInfo
@@ -39,21 +40,12 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.transcribing = False
         self.active_transcription_source = ""
         self.last = ""
-        self.last_emitted = ""
-        self.last_emitted_context = None
-        self.last_submitted = False
-        self.pending_text = ""
-        self.pending_segments = []
-        self.pending_context = None
-        self.pending_context_mismatch_since = 0.0
-        self.output_grace_until = 0.0
+        self.output_state = OutputState()
         self.last_target = None
         self.last_target_context = None
         self.startup_minimized = False
         self.internal_buffer = ""
         self.buffer_slots = {i: "" for i in range(1, 11)}
-        self.last_paste_payload = ""
-        self.last_replace_state = None
         self.ai_correction_seq = 0
         self.ai_prefetch_lock = threading.Lock()
         self.ai_prefetch = AICorrectionPrefetchState()

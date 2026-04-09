@@ -361,19 +361,20 @@ class AppRuntimeMixin:
         info = fg_info()
         active = is_target_window(info)
         context = target_context_key(info) if active else None
-        if self.pending_text and self.pending_context and context != self.pending_context:
+        state = self.output_state
+        if state.pending_text and state.pending_context and context != state.pending_context:
             now = time.monotonic()
-            if now >= getattr(self, "output_grace_until", 0.0):
-                if not getattr(self, "pending_context_mismatch_since", 0.0):
-                    self.pending_context_mismatch_since = now
-                elif now - self.pending_context_mismatch_since >= 0.45:
+            if now >= state.output_grace_until:
+                if not state.pending_context_mismatch_since:
+                    state.pending_context_mismatch_since = now
+                elif now - state.pending_context_mismatch_since >= 0.45:
                     self._clear_pending_state(clear_last_emitted=False, clear_last_submitted=False)
-                    self.pending_context_mismatch_since = 0.0
+                    state.reset_context_mismatch()
                     self.log("Pending input cleared: focused input context changed")
             else:
-                self.pending_context_mismatch_since = 0.0
+                state.reset_context_mismatch()
         else:
-            self.pending_context_mismatch_since = 0.0
+            state.reset_context_mismatch()
         if active != self.last_target:
             self.last_target = active
             self.log("Target window active" if active else "Target window inactive")
