@@ -327,6 +327,7 @@ class AppRuntimeMixin:
                             "raw_text": payload.get("raw_text", ""),
                         },
                     )
+                    self.refresh_history_browser()
                     self.emit_text(self.last)
                     self.beep("done")
                     self.log(f"Transcript ready from {payload['source']} in {float(payload['elapsed']):.2f}s for {float(payload['audio_seconds']):.2f}s audio")
