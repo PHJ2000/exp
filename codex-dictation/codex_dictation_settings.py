@@ -1,22 +1,41 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
-def _runtime_root() -> Path:
+def _legacy_runtime_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
 
 
+def _user_data_root() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        return Path(local_app_data).resolve() / "CodexDictation"
+    if sys.platform.startswith("win"):
+        return Path.home().resolve() / "AppData" / "Local" / "CodexDictation"
+    return Path.home().resolve() / ".codex-dictation"
+
+
 APP_NAME = "Codex Dictation"
-ROOT = _runtime_root()
-SETTINGS_PATH = ROOT / "codex_dictation.settings.json"
-HISTORY_PATH = ROOT / "codex_dictation.history.jsonl"
-LOG_PATH = ROOT / "codex_dictation.log"
+LEGACY_ROOT = _legacy_runtime_root()
+DATA_ROOT = _user_data_root()
+ROOT = DATA_ROOT
+SETTINGS_FILENAME = "codex_dictation.settings.json"
+HISTORY_FILENAME = "codex_dictation.history.jsonl"
+LOG_FILENAME = "codex_dictation.log"
+SETTINGS_PATH = DATA_ROOT / SETTINGS_FILENAME
+HISTORY_PATH = DATA_ROOT / HISTORY_FILENAME
+LOG_PATH = DATA_ROOT / LOG_FILENAME
+LEGACY_SETTINGS_PATH = LEGACY_ROOT / SETTINGS_FILENAME
+LEGACY_HISTORY_PATH = LEGACY_ROOT / HISTORY_FILENAME
+LEGACY_LOG_PATH = LEGACY_ROOT / LOG_FILENAME
 AI_PREFETCH_CACHE_SIZE = 3
 DEFAULT_LLM_MODEL = "gemma3:4b"
 
@@ -28,6 +47,28 @@ def display_path(path: Path | str, *, base: Path | None = None) -> str:
         return candidate.resolve().relative_to(resolved_base).as_posix()
     except ValueError:
         return candidate.name
+
+
+def ensure_runtime_data_dir() -> Path:
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    return DATA_ROOT
+
+
+def _migrate_legacy_file(legacy_path: Path, target_path: Path) -> None:
+    if target_path.exists() or not legacy_path.exists():
+        return
+    ensure_runtime_data_dir()
+    try:
+        shutil.copy2(legacy_path, target_path)
+    except Exception:
+        pass
+
+
+def ensure_runtime_paths() -> None:
+    ensure_runtime_data_dir()
+    _migrate_legacy_file(LEGACY_SETTINGS_PATH, SETTINGS_PATH)
+    _migrate_legacy_file(LEGACY_HISTORY_PATH, HISTORY_PATH)
+    _migrate_legacy_file(LEGACY_LOG_PATH, LOG_PATH)
 
 LANGUAGE_UI_LABELS = {"auto": "자동", "ko": "한국어", "en": "영어"}
 LLM_PROFILE_MODELS = {"balanced": "gemma3:4b", "accurate": "gemma3:12b"}
@@ -170,6 +211,7 @@ def resolve_llm_model(settings: Settings) -> str:
 
 
 def load_settings() -> Settings:
+    ensure_runtime_paths()
     if not SETTINGS_PATH.exists():
         settings = Settings()
         save_settings(settings)
@@ -186,4 +228,5 @@ def load_settings() -> Settings:
 
 
 def save_settings(settings: Settings) -> None:
+    ensure_runtime_paths()
     SETTINGS_PATH.write_text(json.dumps(asdict(settings), indent=2), encoding="utf-8")
