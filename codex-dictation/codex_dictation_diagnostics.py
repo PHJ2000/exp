@@ -10,6 +10,7 @@ from codex_dictation_settings import (
     SETTINGS_PATH,
     Settings,
     audio_preset_label,
+    display_path,
     language_label,
     llm_profile_label,
     normalize_audio_preset_value,
@@ -33,9 +34,9 @@ def doctor(settings: Settings | None = None) -> str:
         f"{APP_NAME} doctor",
         "-" * 40,
         f"Python: {sys.version.split()[0]}",
-        f"Settings: {SETTINGS_PATH}",
-        f"History: {HISTORY_PATH}",
-        f"Log: {LOG_PATH}",
+        f"Settings: {display_path(SETTINGS_PATH)}",
+        f"History: {display_path(HISTORY_PATH)}",
+        f"Log: {display_path(LOG_PATH)}",
     ]
     if settings:
         lines += [

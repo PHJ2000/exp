@@ -20,6 +20,15 @@ LOG_PATH = ROOT / "codex_dictation.log"
 AI_PREFETCH_CACHE_SIZE = 3
 DEFAULT_LLM_MODEL = "gemma3:4b"
 
+
+def display_path(path: Path | str, *, base: Path | None = None) -> str:
+    candidate = Path(path)
+    resolved_base = (base or ROOT).resolve()
+    try:
+        return candidate.resolve().relative_to(resolved_base).as_posix()
+    except ValueError:
+        return candidate.name
+
 LANGUAGE_UI_LABELS = {"auto": "자동", "ko": "한국어", "en": "영어"}
 LLM_PROFILE_MODELS = {"balanced": "gemma3:4b", "accurate": "gemma3:12b"}
 LLM_PROFILE_UI_LABELS = {"balanced": "균형", "accurate": "정확도", "custom": "직접지정"}
