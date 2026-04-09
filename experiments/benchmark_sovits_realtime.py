@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import statistics
+import sys
 import time
 from pathlib import Path
 
@@ -16,11 +17,18 @@ from so_vits_svc_fork.inference.core import RealtimeVC2, Svc
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CODEX_DICTATION_DIR = ROOT / "codex-dictation"
+if str(CODEX_DICTATION_DIR) not in sys.path:
+    sys.path.insert(0, str(CODEX_DICTATION_DIR))
+
+from codex_share_safe import write_share_safe_json
+
 MODEL_PATH = ROOT / "models" / "pinkie" / "G_166400.pth"
 CONFIG_PATH = ROOT / "models" / "pinkie" / "config.json"
 SOURCE_DIR = ROOT / "external" / "so-vits-svc-fork" / "tests" / "dataset_raw" / "test"
 GENERATED_DIR = ROOT / "inputs"
 RESULT_PATH = ROOT / "experiments" / "results_sovits_realtime.json"
+SHARE_SAFE_RESULT_PATH = ROOT / "experiments" / "results_sovits_realtime.share.json"
 OUTPUT_DIR = ROOT / "outputs"
 
 
@@ -222,6 +230,7 @@ def main() -> None:
         "streaming_realtimevc2_after_warmup": streaming_results,
     }
     RESULT_PATH.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    write_share_safe_json(result, SHARE_SAFE_RESULT_PATH, project_root=ROOT)
     print(json.dumps(result, indent=2))
 
 

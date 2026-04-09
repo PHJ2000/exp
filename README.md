@@ -24,6 +24,8 @@ Codex CLI에 붙여 쓰는 Windows용 로컬 받아쓰기 프로젝트입니다.
   - RTX 4060 기준 실험 결과 정리 문서
 - `results_sovits_realtime.json`
   - 벤치마크 결과 원본 데이터
+- `results_sovits_realtime.share.json`
+  - 공유용으로 경로/로컬 호스트 정보를 마스킹한 결과 복사본
 
 요약:
 - 워밍업 이후 기준으로는 `거의 실시간`에 가까운 결과가 나왔고
