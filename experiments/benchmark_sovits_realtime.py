@@ -24,6 +24,13 @@ RESULT_PATH = ROOT / "experiments" / "results_sovits_realtime.json"
 OUTPUT_DIR = ROOT / "outputs"
 
 
+def display_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.name
+
+
 def build_test_clip(target_seconds: float, sample_rate: int, *, gap_seconds: float = 0.2) -> Path:
     files = sorted(SOURCE_DIR.glob("LJ*.wav"))
     if not files:
@@ -181,19 +188,19 @@ def main() -> None:
     for input_path, duration_seconds in zip(input_paths, durations):
         audio, _ = librosa.load(input_path, sr=sample_rate, mono=True)
         offline = run_offline_case(svc_model, audio, duration_seconds, speaker=speaker)
-        offline["input_path"] = input_path.as_posix()
+        offline["input_path"] = display_path(input_path)
         offline_results.append(offline)
 
         if math.isclose(duration_seconds, 12.0):
             streaming_results.append(
                 {
-                    "input_path": input_path.as_posix(),
+                    "input_path": display_path(input_path),
                     **run_streaming_case(svc_model, audio, speaker=speaker, block_seconds=0.5),
                 }
             )
             streaming_results.append(
                 {
-                    "input_path": input_path.as_posix(),
+                    "input_path": display_path(input_path),
                     **run_streaming_case(svc_model, audio, speaker=speaker, block_seconds=1.0),
                 }
             )
@@ -206,8 +213,8 @@ def main() -> None:
             "cuda_version": torch.version.cuda,
             "cuda_available": torch.cuda.is_available(),
             "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-            "model_path": MODEL_PATH.as_posix(),
-            "config_path": CONFIG_PATH.as_posix(),
+            "model_path": display_path(MODEL_PATH),
+            "config_path": display_path(CONFIG_PATH),
             "speaker": speaker,
             "sample_rate": sample_rate,
         },
