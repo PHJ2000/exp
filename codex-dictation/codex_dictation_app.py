@@ -73,10 +73,12 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
             "llm_model",
             "llm_base_url",
             "llm_timeout_seconds",
+            "selected_audio_profile",
         ]}
         self.vars["audio_preset"] = tk.StringVar(value=audio_preset_label(self.s.audio_preset))
         self.vars["language"] = tk.StringVar(value=language_label(self.s.language))
         self.vars["llm_profile"] = tk.StringVar(value=llm_profile_label(self.s.llm_profile))
+        self.audio_profile_name = tk.StringVar(value=self.s.selected_audio_profile)
         self.bools = {key: tk.BooleanVar(value=getattr(self.s, key)) for key in [
             "auto_enter",
             "trim_silence",
@@ -91,6 +93,7 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.target = tk.StringVar(value="")
         self.devices = [device["name"] for device in get_input_devices()]
         self._ui()
+        self.refresh_audio_profile_choices()
         self.refresh_target()
         self.refresh_status("Starting")
         self._sync_llm_status_idle()
