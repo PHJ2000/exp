@@ -74,6 +74,7 @@ LANGUAGE_UI_LABELS = {"auto": "자동", "ko": "한국어", "en": "영어"}
 LLM_PROFILE_MODELS = {"balanced": "gemma3:4b", "accurate": "gemma3:12b"}
 LLM_PROFILE_UI_LABELS = {"balanced": "균형", "accurate": "정확도", "custom": "직접지정"}
 AUDIO_PRESET_UI_LABELS = {"manual": "직접 조정", "quiet": "조용한 방", "normal": "보통", "noisy": "시끄러운 방"}
+OUTPUT_MODE_UI_LABELS = {"auto": "auto", "paste": "paste", "clipboard": "clipboard", "type": "type"}
 DEFAULT_AUDIO_PRESET = "manual"
 AUDIO_PRESET_VALUES = {
     "manual": {},
@@ -101,7 +102,7 @@ class Settings:
     paste_last_hotkey: str = "f9"
     toggle_output_hotkey: str = "f10"
     toggle_enter_hotkey: str = "f11"
-    output_mode: str = "type"
+    output_mode: str = "auto"
     paste_hotkey: str = "ctrl+v"
     auto_enter: bool = False
     trim_silence: bool = True
@@ -202,6 +203,25 @@ def audio_preset_label(value: str | None) -> str:
     return AUDIO_PRESET_UI_LABELS.get(normalized, AUDIO_PRESET_UI_LABELS[DEFAULT_AUDIO_PRESET])
 
 
+def normalize_output_mode_value(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    aliases = {
+        "": "auto",
+        "auto": "auto",
+        "자동": "auto",
+        "automatic": "auto",
+        "paste": "paste",
+        "붙여넣기": "paste",
+        "clipboard": "clipboard",
+        "클립보드": "clipboard",
+        "type": "type",
+        "typing": "type",
+        "직접입력": "type",
+        "직접 입력": "type",
+    }
+    return aliases.get(raw, "auto")
+
+
 def resolve_llm_model(settings: Settings) -> str:
     profile = normalize_llm_profile_value(settings.llm_profile)
     if profile in LLM_PROFILE_MODELS:
@@ -224,6 +244,7 @@ def load_settings() -> Settings:
     settings.noise_gate_threshold = max(float(settings.noise_gate_threshold), 0.0)
     settings.language = normalize_language_value(settings.language)
     settings.llm_profile = normalize_llm_profile_value(settings.llm_profile)
+    settings.output_mode = normalize_output_mode_value(settings.output_mode)
     return settings
 
 

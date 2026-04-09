@@ -48,7 +48,7 @@ class AppUIMixin:
         self._check(left, "Play feedback beeps", "beep_feedback", 16)
         self._check(left, "Keep window on top", "keep_window_on_top", 17)
         ttk.Button(left, text="Apply Audio Preset", command=self.apply_audio_preset).grid(row=18, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        self._combo(right, "Output Mode", "output_mode", ["paste", "clipboard", "type"], 0)
+        self._combo(right, "Output Mode", "output_mode", ["auto", "paste", "clipboard", "type"], 0)
         self._entry(right, "Paste Hotkey", "paste_hotkey", 1)
         self._check(right, "Press Enter after output", "auto_enter", 2)
         self._check(right, "Always listen when target input window is focused", "always_listen_enabled", 3)

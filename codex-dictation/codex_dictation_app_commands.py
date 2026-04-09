@@ -341,8 +341,8 @@ class AppCommandActionsMixin:
         self.log("Last transcript copied")
 
     def cycle_output(self):
-        order = ["paste", "clipboard", "type"]
-        self.s.output_mode = order[(order.index(self.s.output_mode) + 1) % len(order)] if self.s.output_mode in order else "paste"
+        order = ["auto", "paste", "clipboard", "type"]
+        self.s.output_mode = order[(order.index(self.s.output_mode) + 1) % len(order)] if self.s.output_mode in order else "auto"
         self.vars["output_mode"].set(self.s.output_mode)
         save_settings(self.s)
         self.refresh_status()

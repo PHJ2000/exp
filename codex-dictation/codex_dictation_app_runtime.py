@@ -13,7 +13,7 @@ from tkinter import messagebox
 
 from codex_dictation_audio import trim_silence
 from codex_dictation_diagnostics import doctor
-from codex_dictation_settings import audio_preset_label, language_label, llm_profile_label, normalize_audio_preset_value, normalize_language_value, normalize_llm_profile_value, resolve_llm_model, save_settings
+from codex_dictation_settings import audio_preset_label, language_label, llm_profile_label, normalize_audio_preset_value, normalize_language_value, normalize_llm_profile_value, normalize_output_mode_value, resolve_llm_model, save_settings
 from codex_dictation_targeting import APP_PID, fg_info, focus_best_terminal, focus_window, is_target_window, target_context_key
 from codex_dictation_utils import append_history, normalize_text
 
@@ -99,6 +99,9 @@ class AppRuntimeMixin:
             elif key == "llm_profile":
                 setattr(self.s, key, normalize_llm_profile_value(raw))
                 self.vars["llm_profile"].set(llm_profile_label(self.s.llm_profile))
+            elif key == "output_mode":
+                setattr(self.s, key, normalize_output_mode_value(raw))
+                self.vars["output_mode"].set(self.s.output_mode)
             elif isinstance(current, int):
                 setattr(self.s, key, int(raw or "0"))
             elif isinstance(current, float):
