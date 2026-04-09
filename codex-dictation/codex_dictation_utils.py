@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from codex_dictation_settings import HISTORY_PATH, LOG_PATH
+from codex_dictation_settings import HISTORY_PATH, LOG_PATH, ensure_runtime_paths
 
 
 def append_app_log(msg: str) -> None:
     line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
     try:
+        ensure_runtime_paths()
         with LOG_PATH.open("a", encoding="utf-8") as handle:
             handle.write(line)
     except Exception:
@@ -17,6 +18,7 @@ def append_app_log(msg: str) -> None:
 
 def append_history(text: str, meta: dict) -> None:
     payload = {"timestamp": datetime.now().isoformat(timespec="seconds"), "text": text, **meta}
+    ensure_runtime_paths()
     with HISTORY_PATH.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 

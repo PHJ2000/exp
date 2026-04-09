@@ -5,7 +5,12 @@ import sys
 from codex_dictation_audio import get_input_devices
 from codex_dictation_settings import (
     APP_NAME,
+    DATA_ROOT,
     HISTORY_PATH,
+    LEGACY_HISTORY_PATH,
+    LEGACY_LOG_PATH,
+    LEGACY_ROOT,
+    LEGACY_SETTINGS_PATH,
     LOG_PATH,
     SETTINGS_PATH,
     Settings,
@@ -34,10 +39,22 @@ def doctor(settings: Settings | None = None) -> str:
         f"{APP_NAME} doctor",
         "-" * 40,
         f"Python: {sys.version.split()[0]}",
+        f"Data root: {DATA_ROOT.as_posix()}",
         f"Settings: {display_path(SETTINGS_PATH)}",
         f"History: {display_path(HISTORY_PATH)}",
         f"Log: {display_path(LOG_PATH)}",
     ]
+    legacy_files = [
+        name
+        for name, path in (
+            ("settings", LEGACY_SETTINGS_PATH),
+            ("history", LEGACY_HISTORY_PATH),
+            ("log", LEGACY_LOG_PATH),
+        )
+        if path.exists()
+    ]
+    if legacy_files:
+        lines.append(f"Legacy runtime files: {LEGACY_ROOT.as_posix()} ({', '.join(legacy_files)})")
     if settings:
         lines += [
             f"Always listen enabled: {settings.always_listen_enabled}",
