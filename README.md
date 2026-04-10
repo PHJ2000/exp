@@ -100,6 +100,23 @@ Codex CLI에 붙여 쓰는 Windows용 로컬 받아쓰기 프로젝트입니다.
   - 브랜치: `feat/issue-40/codex-dictation-auto-tuning`
   - 브랜치: `bug/issue-41/codex-dictation-output-context-reset`
 
+## 자기 PR 셀프 리뷰 기록 규칙
+
+- GitHub에서는 PR 작성자가 자기 PR에 `APPROVE` 또는 `REQUEST_CHANGES` 리뷰를 직접 남길 수 없습니다.
+- 다만 `COMMENTED` 리뷰와 일반 PR 코멘트는 남길 수 있으므로, 자기 PR을 검토할 때는 기본적으로 `COMMENTED` 리뷰를 사용합니다.
+- 이때 리뷰 본문 첫 줄에 의도된 판정을 아래 형식으로 명시합니다.
+  - `[의도된 판정] APPROVE`
+  - `[의도된 판정] REQUEST_CHANGES`
+- 즉, GitHub의 실제 리뷰 상태는 `COMMENTED`로 남더라도, 본문 첫 줄을 통해 검토 의도를 명확히 기록합니다.
+- 통과 의도일 때는 테스트 결과, 확인 범위, 머지해도 되는 이유를 함께 적습니다.
+- 수정 필요 의도일 때는 핵심 문제, 회귀 위험, 필요한 수정 방향을 함께 적습니다.
+- 필요하면 별도의 일반 PR 코멘트로 부연 설명을 달 수 있지만, 판정 성격을 남기는 기본 기록은 `COMMENTED` 리뷰 본문에 남깁니다.
+- 예시는 아래와 같습니다.
+  - `[의도된 판정] APPROVE`
+  - `검토 결과 추가 이슈는 보이지 않으며, 현재 기준으로 머지 진행이 가능합니다.`
+  - `[의도된 판정] REQUEST_CHANGES`
+  - `unknown/general 타깃에서 기존 출력 모드 회귀 가능성이 있어 수정 후 다시 확인이 필요합니다.`
+
 ## 다음 머지 기준
 
 나중에 `main` 쪽으로 가져갈 때는 기본적으로 아래 두 단위를 기준으로 보면 됩니다.
