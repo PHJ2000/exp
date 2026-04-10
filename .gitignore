@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 codex-dictation/build/
 codex-dictation/dist/
+codex-dictation/release/
 codex-dictation/codex_dictation.history.jsonl
 codex-dictation/codex_dictation.log
 tmp_*.txt
