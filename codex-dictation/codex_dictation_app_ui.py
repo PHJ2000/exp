@@ -48,8 +48,11 @@ class AppUIMixin:
         self._check(left, "Play feedback beeps", "beep_feedback", 16)
         self._check(left, "Keep window on top", "keep_window_on_top", 17)
         ttk.Button(left, text="Apply Audio Preset", command=self.apply_audio_preset).grid(row=18, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        ttk.Button(left, text="Apply Always-Listen Tuning", command=self.apply_always_listen_tuning).grid(row=19, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(left, text="Revert Last Tuning", command=self.revert_always_listen_tuning).grid(row=20, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(left, text="Reset Tuning Stats", command=self.reset_always_listen_tuning_stats).grid(row=21, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         apf = ttk.LabelFrame(left, text="Audio Profiles", padding=8)
-        apf.grid(row=19, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        apf.grid(row=22, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         apf.columnconfigure(1, weight=1)
         ttk.Label(apf, text="Saved Profile").grid(row=0, column=0, sticky="w")
         self.audio_profile_combo = ttk.Combobox(apf, textvariable=self.vars["selected_audio_profile"], values=[], state="normal")
@@ -114,3 +117,4 @@ class AppUIMixin:
 
     def _check(self, parent, label, key, row):
         ttk.Checkbutton(parent, text=label, variable=self.bools[key]).grid(row=row, column=0, columnspan=2, sticky="w", pady=(8 if row in {2, 3, 10} else 0, 0))
+

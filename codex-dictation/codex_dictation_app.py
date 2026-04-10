@@ -33,6 +33,7 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.jobs = queue.Queue()
         self.backend = WhisperBackend()
         self.audio_status = tk.StringVar(value="Audio | waiting for input")
+        self.tuning_status = tk.StringVar(value="Always-listen Tuning | 표본 수집 중")
         self.llm_status = tk.StringVar(value="LLM | 대기")
         self.posteditor = OllamaPostEditor(self.log, self._set_llm_status)
         self.rec = Recorder(self.s, self.log)
@@ -43,6 +44,7 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.output_state = OutputState()
         self.last_target = None
         self.last_target_context = None
+        self.last_always_listen_tuning_backup = None
         self.startup_minimized = False
         self.internal_buffer = ""
         self.buffer_slots = {i: "" for i in range(1, 11)}
