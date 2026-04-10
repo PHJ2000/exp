@@ -1,0 +1,64 @@
+{
+  "environment": {
+    "torch_version": "2.9.1+cu128",
+    "cuda_version": "12.8",
+    "cuda_available": true,
+    "device_name": "NVIDIA GeForce RTX 4060",
+    "model_path": "models/pinkie/G_166400.pth",
+    "config_path": "models/pinkie/config.json",
+    "speaker": "Pinkie {neutral}",
+    "sample_rate": 44100
+  },
+  "offline_after_warmup": [
+    {
+      "input_seconds": 1.0,
+      "output_seconds": 1.0,
+      "elapsed_seconds": 0.5134313000016846,
+      "rtf": 0.5134313000016846,
+      "input_path": "inputs/benchmark_1.0s.wav"
+    },
+    {
+      "input_seconds": 3.0,
+      "output_seconds": 3.0,
+      "elapsed_seconds": 0.673982000000251,
+      "rtf": 0.22466066666675033,
+      "input_path": "inputs/benchmark_3.0s.wav"
+    },
+    {
+      "input_seconds": 6.0,
+      "output_seconds": 6.0,
+      "elapsed_seconds": 0.6966969999994035,
+      "rtf": 0.11611616666656725,
+      "input_path": "inputs/benchmark_6.0s.wav"
+    },
+    {
+      "input_seconds": 12.0,
+      "output_seconds": 12.0,
+      "elapsed_seconds": 1.0854241999986698,
+      "rtf": 0.09045201666655582,
+      "input_path": "inputs/benchmark_12.0s.wav"
+    }
+  ],
+  "streaming_realtimevc2_after_warmup": [
+    {
+      "input_path": "inputs/benchmark_12.0s.wav",
+      "block_seconds": 0.5,
+      "blocks": 24,
+      "mean_rtf": 0.10556558333367623,
+      "median_rtf": 0.021002000001317356,
+      "p95_rtf": 0.6601003099989596,
+      "max_rtf": 1.3040532000013627,
+      "blocks_over_1x": 1
+    },
+    {
+      "input_path": "inputs/benchmark_12.0s.wav",
+      "block_seconds": 1.0,
+      "blocks": 12,
+      "mean_rtf": 0.0897907416668507,
+      "median_rtf": 0.01163540000015928,
+      "p95_rtf": 0.4654135950004272,
+      "max_rtf": 0.6355039000009128,
+      "blocks_over_1x": 0
+    }
+  ]
+}

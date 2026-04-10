@@ -150,6 +150,7 @@ codex-dictation\run_codex_terminal.bat
 - 앱 안의 `History Browser`에서 최근 기록 검색, 불러오기, 다시 붙여넣기를 바로 할 수 있습니다.
 - 설정 저장: `%LOCALAPPDATA%\CodexDictation\codex_dictation.settings.json`
 - 활동 로그: `%LOCALAPPDATA%\CodexDictation\codex_dictation.log`
+- 공유용 마스킹: `python codex-dictation/codex_share_safe.py --input %LOCALAPPDATA%\CodexDictation\codex_dictation.log --output outputs\codex_dictation.log.share-safe`
 - 입력 감도 보정: 설정의 `Input Gain`으로 마이크 입력 크기를 조절할 수 있습니다. 기본값 `1.0`은 기존 동작과 동일하고, 작은 마이크는 `1.2`~`2.0` 정도로 키워 볼 수 있습니다.
 - 소음 환경 튜닝: `Noise Gate Threshold`로 작은 배경 소음을 잘라내고, `Audio Preset`으로 조용한 방/보통/시끄러운 방 기준값을 빠르게 적용할 수 있습니다.
 - 오디오 프로필: 현재 마이크/always-listen 관련 값을 이름 붙여 저장하고, 나중에 `Apply Profile`로 다시 불러올 수 있습니다. `Audio Preset`은 빠른 기본값이고, 오디오 프로필은 사용자가 저장한 세부 튜닝 묶음입니다.

@@ -4,7 +4,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from codex_dictation_settings import HISTORY_PATH, LOG_PATH, ensure_runtime_paths
+from codex_dictation_settings import HISTORY_PATH, LOG_PATH, SETTINGS_PATH, ensure_runtime_paths
+from codex_share_safe import export_share_safe_file
 
 
 def append_app_log(msg: str) -> None:
@@ -78,3 +79,15 @@ def short_log_text(text: str, limit: int = 80) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3] + "..."
+
+
+def export_share_safe_runtime_artifacts(output_dir: Path, *, mask_text_fields: bool = False) -> list[Path]:
+    ensure_runtime_paths()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    exported: list[Path] = []
+    for source in (LOG_PATH, HISTORY_PATH, SETTINGS_PATH):
+        if not source.exists():
+            continue
+        destination = output_dir / f"{source.stem}.share-safe{source.suffix}"
+        exported.append(export_share_safe_file(source, destination, mask_text_fields=mask_text_fields))
+    return exported
