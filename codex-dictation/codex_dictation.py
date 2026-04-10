@@ -8,7 +8,7 @@ from tkinter import ttk
 
 from codex_dictation_app import App
 from codex_dictation_diagnostics import doctor
-from codex_dictation_settings import APP_NAME, load_settings, normalize_language_value
+from codex_dictation_settings import APP_NAME, APP_VERSION, load_settings, normalize_language_value
 from codex_dictation_targeting import acquire_single_instance, fg_info
 from codex_dictation_transcription import transcribe_file
 from codex_dictation_utils import append_app_log
@@ -16,6 +16,7 @@ from codex_dictation_utils import append_app_log
 
 def main():
     parser = argparse.ArgumentParser(description=APP_NAME)
+    parser.add_argument("--version", action="version", version=f"{APP_NAME} {APP_VERSION}")
     parser.add_argument("--doctor", action="store_true")
     parser.add_argument("--transcribe-file", type=Path)
     parser.add_argument("--model", type=str)

@@ -119,6 +119,21 @@ Codex 터미널만 빠르게 열기:
 codex-dictation\run_codex_terminal.bat
 ```
 
+## 첫 실행 체크리스트
+
+처음 실행할 때는 아래 순서로 확인하는 것이 가장 빠릅니다.
+
+1. 앱이 켜지면 상단 제목에 버전이 보이는지 확인합니다.
+2. `Doctor` 버튼 또는 `--doctor` 명령으로 현재 환경을 점검합니다.
+3. `Input Device`가 실제 마이크로 잡혀 있는지 확인합니다.
+4. 항상 듣기나 수동 녹음을 한 번 짧게 실행해 로그에 전사 결과가 남는지 확인합니다.
+5. 로그와 설정 파일 위치는 `%LOCALAPPDATA%\CodexDictation\` 아래를 먼저 봅니다.
+
+대표적으로 확인할 파일:
+- 설정: `%LOCALAPPDATA%\CodexDictation\codex_dictation.settings.json`
+- 기록: `%LOCALAPPDATA%\CodexDictation\codex_dictation.history.jsonl`
+- 로그: `%LOCALAPPDATA%\CodexDictation\codex_dictation.log`
+
 ## AutoHotkey 런처
 
 `codex-dictation\launch_codex_dictation.ahk`를 AutoHotkey v2로 실행하면 전역 단축키를 쓸 수 있습니다.
@@ -224,6 +239,12 @@ codex-dictation\run_codex_terminal.bat
 
 ## 점검
 
+버전 확인:
+
+```powershell
+.venv\Scripts\python.exe codex-dictation\codex_dictation.py --version
+```
+
 환경 점검:
 
 ```powershell
@@ -235,6 +256,20 @@ codex-dictation\run_codex_terminal.bat
 ```powershell
 .venv\Scripts\python.exe codex-dictation\codex_dictation.py --transcribe-file some_audio.wav --model tiny --language ko
 ```
+
+## 문제 해결
+
+- 앱이 안 켜지면
+  - `codex-dictation\run_codex_dictation.bat`로 다시 실행해 보고, `%LOCALAPPDATA%\CodexDictation\codex_dictation.log`를 확인합니다.
+- 마이크가 안 잡히면
+  - `--doctor` 출력의 `Input devices` 목록과 앱 설정의 `Input Device`가 맞는지 먼저 확인합니다.
+- 전사가 안 되면
+  - Whisper 모델이 처음 다운로드 중인지, 또는 로그에 `No speech detected`가 반복되는지 봅니다.
+- 입력창에 텍스트가 안 들어가면
+  - 현재 포커스된 창이 실제 텍스트 입력 상태인지, `Output Mode`가 맞는지, 붙여넣기 차단 앱인지 확인합니다.
+- 로그를 공유해야 하면
+  - 먼저 share-safe 출력으로 변환합니다.
+  - `python codex-dictation/codex_share_safe.py --input %LOCALAPPDATA%\CodexDictation\codex_dictation.log --output outputs\codex_dictation.log.share-safe`
 
 릴리즈 전 기본 검증:
 

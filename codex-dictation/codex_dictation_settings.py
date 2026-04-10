@@ -24,6 +24,8 @@ def _user_data_root() -> Path:
 
 
 APP_NAME = "Codex Dictation"
+APP_VERSION = "0.1.0-beta.1"
+APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 LEGACY_ROOT = _legacy_runtime_root()
 DATA_ROOT = _user_data_root()
 ROOT = DATA_ROOT
