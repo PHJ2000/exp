@@ -37,6 +37,16 @@ class OutputStrategyTests(unittest.TestCase):
         self.assertEqual(classify_output_target(info, precise_focus=True, terminal=False, general_input=True), "text")
         self.assertEqual(recommended_output_mode_for_target(info, precise_focus=True, terminal=False, general_input=True), "type")
 
+    def test_general_targets_stay_conservative_with_type(self):
+        info = WinInfo(hwnd=1, pid=100, title="Some App", cls="MainWindow", proc="custom-editor.exe")
+        self.assertEqual(classify_output_target(info, precise_focus=False, terminal=False, general_input=True), "general")
+        self.assertEqual(recommended_output_mode_for_target(info, precise_focus=False, terminal=False, general_input=True), "type")
+
+    def test_unknown_targets_stay_conservative_with_type(self):
+        info = WinInfo(hwnd=1, pid=100, title="", cls="MysteryClass", proc="mystery.exe")
+        self.assertEqual(classify_output_target(info, precise_focus=False, terminal=False, general_input=False), "unknown")
+        self.assertEqual(recommended_output_mode_for_target(info, precise_focus=False, terminal=False, general_input=False), "type")
+
     def test_system_targets_prefer_paste(self):
         info = WinInfo(hwnd=1, pid=100, title="설정", cls="ApplicationFrameWindow", proc="systemsettings.exe")
         self.assertEqual(classify_output_target(info, precise_focus=False, terminal=False, general_input=True), "system")

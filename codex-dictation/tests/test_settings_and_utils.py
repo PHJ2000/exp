@@ -14,16 +14,20 @@ from codex_dictation_settings import (  # noqa: E402
     DEFAULT_LLM_MODEL,
     ROOT,
     Settings,
+    apply_audio_profile,
     audio_preset_label,
     display_path,
     language_label,
     language_model_arg,
+    normalize_audio_profile_name,
+    normalize_audio_profiles,
     llm_profile_label,
     normalize_audio_preset_value,
     normalize_language_value,
     normalize_llm_profile_value,
     normalize_output_mode_value,
     resolve_llm_model,
+    snapshot_audio_profile,
 )
 from codex_dictation_utils import normalize_text, short_log_text  # noqa: E402
 
@@ -65,6 +69,42 @@ class SettingsNormalizationTests(unittest.TestCase):
         self.assertEqual(normalize_output_mode_value("clipboard"), "clipboard")
         self.assertEqual(normalize_output_mode_value("직접 입력"), "type")
         self.assertEqual(normalize_output_mode_value("???"), "auto")
+
+    def test_audio_profile_name_and_profile_normalization(self):
+        self.assertEqual(normalize_audio_profile_name("  회의 용  "), "회의 용")
+        normalized = normalize_audio_profiles(
+            {
+                "  회의 용  ": {
+                    "input_gain": 1.4,
+                    "always_listen_enabled": True,
+                    "unknown": "ignored",
+                }
+            }
+        )
+        self.assertEqual(sorted(normalized.keys()), ["회의 용"])
+        self.assertEqual(normalized["회의 용"]["input_gain"], 1.4)
+        self.assertNotIn("unknown", normalized["회의 용"])
+
+    def test_snapshot_and_apply_audio_profile(self):
+        settings = Settings(
+            input_device="USB Mic",
+            input_gain=1.7,
+            noise_gate_threshold=0.01,
+            auto_stop_silence_seconds=0.8,
+            always_listen_preroll_seconds=0.35,
+            voice_trigger_min_rms=0.02,
+            voice_trigger_ratio=2.8,
+            voice_trigger_consecutive_blocks=3,
+            always_listen_enabled=False,
+            audio_preset="quiet",
+        )
+        profile = snapshot_audio_profile(settings)
+        reapplied = Settings(audio_preset="noisy")
+        apply_audio_profile(reapplied, profile)
+        self.assertEqual(reapplied.input_device, "USB Mic")
+        self.assertAlmostEqual(reapplied.input_gain, 1.7)
+        self.assertFalse(reapplied.always_listen_enabled)
+        self.assertEqual(reapplied.audio_preset, DEFAULT_AUDIO_PRESET)
 
 
 class UtilsTests(unittest.TestCase):

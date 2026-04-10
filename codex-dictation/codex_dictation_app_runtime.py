@@ -19,6 +19,14 @@ from codex_dictation_utils import append_history, normalize_text
 
 
 class AppRuntimeMixin:
+    def refresh_tuning_status(self):
+        suggestion = self.listen.tuning_snapshot()
+        if suggestion.ready:
+            detail = suggestion.describe_changes()
+            self.tuning_status.set(f"Always-listen Tuning | {detail}")
+        else:
+            self.tuning_status.set(f"Always-listen Tuning | {suggestion.summary}")
+
     def refresh_status(self, activity="Idle"):
         queue_depth = self.jobs.qsize()
         pipeline_parts = []
@@ -121,8 +129,55 @@ class AppRuntimeMixin:
         self.refresh_target()
         self.refresh_status()
         self.refresh_audio_status()
+        self.refresh_tuning_status()
         self._sync_llm_status_idle()
         self.log("Settings saved")
+
+    def apply_always_listen_tuning(self):
+        suggestion = self.listen.tuning_snapshot()
+        if not suggestion.ready:
+            self.log(f"Always-listen tuning skipped: {suggestion.summary}")
+            self.refresh_tuning_status()
+            return
+        backup = {
+            "input_gain": self.s.input_gain,
+            "always_listen_preroll_seconds": self.s.always_listen_preroll_seconds,
+            "auto_stop_silence_seconds": self.s.auto_stop_silence_seconds,
+        }
+        self.last_always_listen_tuning_backup = backup
+        for key, value in suggestion.changes.items():
+            setattr(self.s, key, value)
+            if key in self.vars:
+                self.vars[key].set(str(value))
+        save_settings(self.s)
+        self.listen.s = self.s
+        self.rec.s = self.s
+        self.listen.reset_tuning_stats()
+        self.refresh_audio_status()
+        self.refresh_tuning_status()
+        self.log(f"Applied always-listen tuning: {suggestion.describe_changes()}")
+
+    def revert_always_listen_tuning(self):
+        if not self.last_always_listen_tuning_backup:
+            self.log("Always-listen tuning revert skipped: no previous tuning snapshot")
+            return
+        for key, value in self.last_always_listen_tuning_backup.items():
+            setattr(self.s, key, value)
+            if key in self.vars:
+                self.vars[key].set(str(value))
+        save_settings(self.s)
+        self.listen.s = self.s
+        self.rec.s = self.s
+        self.listen.reset_tuning_stats()
+        self.refresh_audio_status()
+        self.refresh_tuning_status()
+        self.log("Reverted last always-listen tuning suggestion")
+        self.last_always_listen_tuning_backup = None
+
+    def reset_always_listen_tuning_stats(self):
+        self.listen.reset_tuning_stats()
+        self.refresh_tuning_status()
+        self.log("Reset always-listen tuning stats")
 
     def register_hotkeys(self):
         self.save_from_ui()
@@ -358,6 +413,7 @@ class AppRuntimeMixin:
 
     def poll_diagnostics(self):
         self.refresh_audio_status()
+        self.refresh_tuning_status()
         self.root.after(120, self.poll_diagnostics)
 
     def poll_target(self):

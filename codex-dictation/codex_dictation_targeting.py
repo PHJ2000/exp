@@ -332,7 +332,7 @@ def recommended_output_mode_for_target(
         terminal=terminal,
         general_input=general_input,
     )
-    if category in {"terminal", "text"}:
+    if category in {"terminal", "text", "general", "unknown"}:
         return "type"
     return "paste"
 
