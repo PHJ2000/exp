@@ -38,17 +38,54 @@ class _FakeBackend:
 class _RuntimeHarness(AppRuntimeMixin):
     def __init__(self, outputs: list[str]):
         self.jobs = queue.Queue()
+        self.log_q = queue.Queue()
         self.res_q = queue.Queue()
         self.backend = _FakeBackend(outputs)
         self.s = Settings(sample_rate=100, trim_silence=False)
         self.logs: list[str] = []
+        self.emitted: list[str] = []
+        self.history: list[tuple[str, dict]] = []
+        self.last = ""
         self.transcribing = False
+        self.active_transcription_source = ""
+        self.log_text = _NullText()
+        self.root = _NullRoot()
 
     def log(self, message):
         self.logs.append(message)
 
     def refresh_status(self, activity="Idle"):
         _ = activity
+
+    def beep(self, kind):
+        _ = kind
+
+    def is_voice_command_text(self, text):
+        _ = text
+        return False
+
+    def handle_voice_command(self, text):
+        _ = text
+        return False
+
+    def _update_latest_transcript(self, text):
+        self.last = text
+
+    def emit_text(self, text):
+        self.emitted.append(text)
+
+
+class _NullText:
+    def insert(self, *_args, **_kwargs):
+        pass
+
+    def see(self, *_args, **_kwargs):
+        pass
+
+
+class _NullRoot:
+    def after(self, *_args, **_kwargs):
+        pass
 
 
 class AlwaysListenRegressionTests(unittest.TestCase):
@@ -98,8 +135,9 @@ class AlwaysListenRegressionTests(unittest.TestCase):
 
         trailing = np.concatenate(
             [
-                np.zeros(56, dtype=np.float32),
                 np.full(14, 0.015, dtype=np.float32),
+                np.zeros(4, dtype=np.float32),
+                np.zeros(56, dtype=np.float32),
             ]
         )
         self._feed(trailing)
@@ -108,28 +146,35 @@ class AlwaysListenRegressionTests(unittest.TestCase):
         captured_audio = self.captured[0][1]
 
         self.assertGreater(len(captured_audio), 40)
-        np.testing.assert_allclose(captured_audio[-14:], np.full(14, 0.015, dtype=np.float32), atol=1e-6)
+        tail_window = captured_audio[-18:]
+        np.testing.assert_allclose(tail_window[:14], np.full(14, 0.015, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(tail_window[14:], np.zeros(4, dtype=np.float32), atol=1e-6)
 
-    def test_transcription_worker_preserves_capture_order_for_back_to_back_segments(self):
+    def test_poll_preserves_capture_order_for_back_to_back_segments(self):
         runtime = _RuntimeHarness(["first result", "second result"])
         worker = threading.Thread(target=runtime._transcription_loop, daemon=True)
         worker.start()
 
-        runtime.queue_audio(np.full(40, 0.12, dtype=np.float32), "always_listen")
-        runtime.queue_audio(np.full(30, 0.11, dtype=np.float32), "always_listen")
-
-        done_payloads = []
+        import codex_dictation_app_runtime as runtime_module
+        original_append_history = runtime_module.append_history
+        runtime_module.append_history = lambda text, meta: runtime.history.append((text, meta))
         deadline = time.time() + 5.0
-        while len(done_payloads) < 2 and time.time() < deadline:
-            try:
-                kind, payload = runtime.res_q.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if kind == "done":
-                done_payloads.append(payload)
+        try:
+            runtime.res_q.put(
+                ("captured", {"audio": np.full(40, 0.12, dtype=np.float32), "source": "always_listen"})
+            )
+            runtime.res_q.put(
+                ("captured", {"audio": np.full(30, 0.11, dtype=np.float32), "source": "always_listen"})
+            )
 
-        self.assertEqual([payload["text"] for payload in done_payloads], ["first result", "second result"])
-        self.assertEqual([payload["source"] for payload in done_payloads], ["always_listen", "always_listen"])
+            while len(runtime.emitted) < 2 and time.time() < deadline:
+                runtime.poll()
+                time.sleep(0.05)
+        finally:
+            runtime_module.append_history = original_append_history
+
+        self.assertEqual(runtime.emitted, ["first result", "second result"])
+        self.assertEqual([meta["source"] for _, meta in runtime.history], ["always_listen", "always_listen"])
         self.assertTrue(any("Queued always_listen audio for background transcription" in message for message in runtime.logs))
 
 
