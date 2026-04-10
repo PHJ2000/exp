@@ -385,6 +385,7 @@ class AppRuntimeMixin:
                             "raw_text": payload.get("raw_text", ""),
                         },
                     )
+                    self.refresh_history_browser()
                     self.emit_text(self.last)
                     self.beep("done")
                     self.log(f"Transcript ready from {payload['source']} in {float(payload['elapsed']):.2f}s for {float(payload['audio_seconds']):.2f}s audio")
@@ -437,6 +438,8 @@ class AppRuntimeMixin:
         if active != self.last_target:
             self.last_target = active
             self.log("Target window active" if active else "Target window inactive")
+        if active:
+            self.last_target_window = info
         self.last_target_context = context
         self.root.after(150, self.poll_target)
 

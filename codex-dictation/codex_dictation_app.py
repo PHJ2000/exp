@@ -44,6 +44,7 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.output_state = OutputState()
         self.last_target = None
         self.last_target_context = None
+        self.last_target_window = launch_target
         self.last_always_listen_tuning_backup = None
         self.startup_minimized = False
         self.internal_buffer = ""
@@ -93,8 +94,13 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         ]}
         self.status = tk.StringVar(value="Idle")
         self.target = tk.StringVar(value="")
+        self.history_query = tk.StringVar(value="")
+        self.history_empty = tk.StringVar(value="기록을 불러오는 중...")
+        self.history_items = []
         self.devices = [device["name"] for device in get_input_devices()]
         self._ui()
+        self.history_query.trace_add("write", self.on_history_query_changed)
+        self.refresh_history_browser(preserve_selection=False)
         self.refresh_audio_profile_choices()
         self.refresh_target()
         self.refresh_status("Starting")

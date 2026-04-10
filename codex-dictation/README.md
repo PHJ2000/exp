@@ -147,6 +147,7 @@ codex-dictation\run_codex_terminal.bat
   - `최대화`, `최소화`, `복원`으로 현재 포커스된 작업 창 상태를 바꿀 수 있습니다.
   - `이스케이프`, `나가기`, `일시정지`, `재생`, `앞으로 감기`, `뒤로 감기`, `세 번 앞으로 감기`, `두 번 뒤로 감기`처럼 미디어 제어 명령도 사용할 수 있습니다.
 - 기록 저장: `%LOCALAPPDATA%\CodexDictation\codex_dictation.history.jsonl`
+- 앱 안의 `History Browser`에서 최근 기록 검색, 불러오기, 다시 붙여넣기를 바로 할 수 있습니다.
 - 설정 저장: `%LOCALAPPDATA%\CodexDictation\codex_dictation.settings.json`
 - 활동 로그: `%LOCALAPPDATA%\CodexDictation\codex_dictation.log`
 - 입력 감도 보정: 설정의 `Input Gain`으로 마이크 입력 크기를 조절할 수 있습니다. 기본값 `1.0`은 기존 동작과 동일하고, 작은 마이크는 `1.2`~`2.0` 정도로 키워 볼 수 있습니다.

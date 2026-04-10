@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,7 +30,13 @@ from codex_dictation_settings import (  # noqa: E402
     resolve_llm_model,
     snapshot_audio_profile,
 )
-from codex_dictation_utils import normalize_text, short_log_text  # noqa: E402
+from codex_dictation_utils import (  # noqa: E402
+    filter_history_entries,
+    format_history_entry,
+    normalize_text,
+    read_history_entries,
+    short_log_text,
+)
 
 
 class SettingsNormalizationTests(unittest.TestCase):
@@ -115,6 +122,34 @@ class UtilsTests(unittest.TestCase):
         truncated = short_log_text("하나 둘 셋 넷 다섯 여섯", limit=9)
         self.assertEqual(truncated, "하나 둘 셋...")
         self.assertEqual(short_log_text("짧은 문장", limit=20), "짧은 문장")
+
+    def test_read_history_entries_returns_latest_first(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history_path = Path(temp_dir) / "history.jsonl"
+            history_path.write_text(
+                '\n'.join(
+                    [
+                        '{"timestamp":"2026-04-09T10:00:00","text":"첫 문장"}',
+                        '{"timestamp":"2026-04-09T10:01:00","text":"둘째 문장"}',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            entries = read_history_entries(history_path)
+        self.assertEqual([entry["text"] for entry in entries], ["둘째 문장", "첫 문장"])
+
+    def test_filter_history_entries_matches_normalized_query(self):
+        entries = [
+            {"timestamp": "2026-04-09T10:00:00", "text": "회의 메모 정리"},
+            {"timestamp": "2026-04-09T10:01:00", "text": "장보기 목록"},
+        ]
+        filtered = filter_history_entries(entries, "회의   메모")
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["text"], "회의 메모 정리")
+
+    def test_format_history_entry_includes_timestamp_and_text(self):
+        formatted = format_history_entry({"timestamp": "2026-04-09T10:01:02", "text": "최근 기록 테스트"})
+        self.assertEqual(formatted, "2026-04-09 10:01:02 | 최근 기록 테스트")
 
 
 if __name__ == "__main__":
