@@ -33,6 +33,7 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.jobs = queue.Queue()
         self.backend = WhisperBackend()
         self.audio_status = tk.StringVar(value="Audio | waiting for input")
+        self.tuning_status = tk.StringVar(value="Always-listen Tuning | 표본 수집 중")
         self.llm_status = tk.StringVar(value="LLM | 대기")
         self.posteditor = OllamaPostEditor(self.log, self._set_llm_status)
         self.rec = Recorder(self.s, self.log)
@@ -43,6 +44,8 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self.output_state = OutputState()
         self.last_target = None
         self.last_target_context = None
+        self.last_target_window = launch_target
+        self.last_always_listen_tuning_backup = None
         self.startup_minimized = False
         self.internal_buffer = ""
         self.buffer_slots = {i: "" for i in range(1, 11)}
@@ -73,10 +76,12 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
             "llm_model",
             "llm_base_url",
             "llm_timeout_seconds",
+            "selected_audio_profile",
         ]}
         self.vars["audio_preset"] = tk.StringVar(value=audio_preset_label(self.s.audio_preset))
         self.vars["language"] = tk.StringVar(value=language_label(self.s.language))
         self.vars["llm_profile"] = tk.StringVar(value=llm_profile_label(self.s.llm_profile))
+        self.audio_profile_name = tk.StringVar(value=self.s.selected_audio_profile)
         self.bools = {key: tk.BooleanVar(value=getattr(self.s, key)) for key in [
             "auto_enter",
             "trim_silence",
@@ -96,6 +101,7 @@ class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
         self._ui()
         self.history_query.trace_add("write", self.on_history_query_changed)
         self.refresh_history_browser(preserve_selection=False)
+        self.refresh_audio_profile_choices()
         self.refresh_target()
         self.refresh_status("Starting")
         self._sync_llm_status_idle()
