@@ -198,6 +198,12 @@ codex-dictation\run_codex_terminal.bat
 .venv\Scripts\python.exe codex-dictation\codex_dictation.py --transcribe-file some_audio.wav --model tiny --language ko
 ```
 
+릴리즈 전 기본 검증:
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s codex-dictation\tests -v
+```
+
 ## 메모
 
 - 기본 백엔드는 `faster-whisper`라서 로컬에서 무료로 돌 수 있습니다.
