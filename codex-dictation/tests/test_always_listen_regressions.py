@@ -73,6 +73,7 @@ class _RuntimeHarness(AppRuntimeMixin):
 
     def emit_text(self, text):
         self.emitted.append(text)
+        return True
 
 
 class _NullText:
@@ -136,8 +137,7 @@ class AlwaysListenRegressionTests(unittest.TestCase):
         trailing = np.concatenate(
             [
                 np.full(14, 0.015, dtype=np.float32),
-                np.zeros(4, dtype=np.float32),
-                np.zeros(56, dtype=np.float32),
+                np.zeros(74, dtype=np.float32),
             ]
         )
         self._feed(trailing)
@@ -147,8 +147,8 @@ class AlwaysListenRegressionTests(unittest.TestCase):
 
         self.assertGreater(len(captured_audio), 40)
         tail_window = captured_audio[-18:]
-        np.testing.assert_allclose(tail_window[:14], np.full(14, 0.015, dtype=np.float32), atol=1e-6)
-        np.testing.assert_allclose(tail_window[14:], np.zeros(4, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(tail_window[:10], np.full(10, 0.015, dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(tail_window[-4:], np.zeros(4, dtype=np.float32), atol=1e-6)
 
     def test_poll_preserves_capture_order_for_back_to_back_segments(self):
         runtime = _RuntimeHarness(["first result", "second result"])
@@ -173,7 +173,9 @@ class AlwaysListenRegressionTests(unittest.TestCase):
         finally:
             runtime_module.append_history = original_append_history
 
+        self.assertEqual(runtime.last, "second result")
         self.assertEqual(runtime.emitted, ["first result", "second result"])
+        self.assertEqual([text for text, _ in runtime.history], ["first result", "second result"])
         self.assertEqual([meta["source"] for _, meta in runtime.history], ["always_listen", "always_listen"])
         self.assertTrue(any("Queued always_listen audio for background transcription" in message for message in runtime.logs))
 
