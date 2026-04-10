@@ -23,13 +23,14 @@ Codex CLI에 붙여 쓰는 Windows용 로컬 받아쓰기 프로젝트입니다.
 - `sovits_realtime_report.md`
   - RTX 4060 기준 실험 결과 정리 문서
 - `results_sovits_realtime.json`
-  - 벤치마크 결과 원본 데이터
+  - 체크인된 벤치마크 결과 원본 샘플
 - `results_sovits_realtime.share.json`
-  - 공유용으로 경로/로컬 호스트 정보를 마스킹한 결과 복사본
+  - 체크인된 공유용 마스킹 결과 샘플
 
 요약:
 - 워밍업 이후 기준으로는 `거의 실시간`에 가까운 결과가 나왔고
 - 짧은 블록에서는 간헐적인 지연 스파이크가 생길 수 있음을 확인했습니다.
+- 현재 벤치마크 스크립트 실행 결과는 추적 파일을 덮어쓰지 않고 `outputs/sovits-realtime/` 아래에 생성됩니다.
 - 상세 문서: [`experiments/README.md`](./experiments/README.md)
 
 ### `external/`

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,10 @@ WINDOWS_PATH_PATTERN = re.compile(r"(?P<path>(?<![A-Za-z])(?:[A-Za-z]:[\\/]|\\\\
 LOCAL_HOST_URL_PATTERN = re.compile(r"(?P<scheme>https?://)(?P<host>localhost|127\.0\.0\.1)(?P<port>:\d+)?", re.IGNORECASE)
 LOCAL_HOST_PATTERN = re.compile(r"(?<![\w.-])(?P<host>localhost|127\.0\.0\.1)(?P<port>:\d+)?(?![\w.-])", re.IGNORECASE)
 GENERIC_USER_HOME_PATTERN = re.compile(r"(?i)^(?P<drive>[A-Z]:)[/\\]Users[/\\](?P<username>[^/\\]+)(?P<rest>(?:[/\\].*)?)$")
+USER_ASSIGNMENT_PATTERN = re.compile(
+    r"(?P<prefix>\b(?:user(?:name)?|owner|account)\b\s*[:=]\s*[\"']?)(?P<value>[A-Za-z0-9._-]+)(?P<suffix>[\"']?)",
+    re.IGNORECASE,
+)
 
 
 def _normalize_slashes(value: str) -> str:
@@ -30,6 +35,15 @@ def _normalize_slashes(value: str) -> str:
 
 def _masked_text(text: str) -> str:
     return f"<masked-text:{len(text)} chars>"
+
+
+def _known_usernames(home: Path | None = None) -> set[str]:
+    candidates = {
+        (home or Path.home()).name,
+        os.environ.get("USERNAME", ""),
+        Path(os.environ.get("USERPROFILE", "")).name if os.environ.get("USERPROFILE") else "",
+    }
+    return {value.casefold() for value in candidates if value}
 
 
 def _sanitize_path(path_text: str, *, project_root: Path | None = None, home: Path | None = None) -> str:
@@ -70,9 +84,16 @@ def mask_share_safe_text(text: str, *, project_root: Path | None = None) -> str:
     def replace_path(match: re.Match[str]) -> str:
         return _sanitize_path(match.group("path"), project_root=project_root)
 
+    def replace_user_assignment(match: re.Match[str]) -> str:
+        value = match.group("value")
+        if value.casefold() not in _known_usernames():
+            return match.group(0)
+        return f"{match.group('prefix')}<user-name>{match.group('suffix')}"
+
     masked = LOCAL_HOST_URL_PATTERN.sub(replace_url, text)
     masked = LOCAL_HOST_PATTERN.sub(replace_host, masked)
-    return WINDOWS_PATH_PATTERN.sub(replace_path, masked)
+    masked = WINDOWS_PATH_PATTERN.sub(replace_path, masked)
+    return USER_ASSIGNMENT_PATTERN.sub(replace_user_assignment, masked)
 
 
 def sanitize_for_sharing(

@@ -27,9 +27,10 @@ MODEL_PATH = ROOT / "models" / "pinkie" / "G_166400.pth"
 CONFIG_PATH = ROOT / "models" / "pinkie" / "config.json"
 SOURCE_DIR = ROOT / "external" / "so-vits-svc-fork" / "tests" / "dataset_raw" / "test"
 GENERATED_DIR = ROOT / "inputs"
-RESULT_PATH = ROOT / "experiments" / "results_sovits_realtime.json"
-SHARE_SAFE_RESULT_PATH = ROOT / "experiments" / "results_sovits_realtime.share.json"
 OUTPUT_DIR = ROOT / "outputs"
+BENCHMARK_OUTPUT_DIR = OUTPUT_DIR / "sovits-realtime"
+RESULT_PATH = BENCHMARK_OUTPUT_DIR / "results_sovits_realtime.json"
+SHARE_SAFE_RESULT_PATH = BENCHMARK_OUTPUT_DIR / "results_sovits_realtime.share.json"
 
 
 def display_path(path: Path) -> str:
@@ -213,8 +214,7 @@ def main() -> None:
                 }
             )
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BENCHMARK_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     result = {
         "environment": {
             "torch_version": torch.__version__,
@@ -231,6 +231,8 @@ def main() -> None:
     }
     RESULT_PATH.write_text(json.dumps(result, indent=2), encoding="utf-8")
     write_share_safe_json(result, SHARE_SAFE_RESULT_PATH, project_root=ROOT)
+    print(f"result_path={display_path(RESULT_PATH)}")
+    print(f"share_safe_result_path={display_path(SHARE_SAFE_RESULT_PATH)}")
     print(json.dumps(result, indent=2))
 
 
