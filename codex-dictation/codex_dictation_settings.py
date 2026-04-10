@@ -4,7 +4,7 @@ import json
 import os
 import shutil
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -75,6 +75,17 @@ LLM_PROFILE_MODELS = {"balanced": "gemma3:4b", "accurate": "gemma3:12b"}
 LLM_PROFILE_UI_LABELS = {"balanced": "균형", "accurate": "정확도", "custom": "직접지정"}
 AUDIO_PRESET_UI_LABELS = {"manual": "직접 조정", "quiet": "조용한 방", "normal": "보통", "noisy": "시끄러운 방"}
 DEFAULT_AUDIO_PRESET = "manual"
+AUDIO_PROFILE_SETTING_KEYS = (
+    "input_device",
+    "input_gain",
+    "noise_gate_threshold",
+    "auto_stop_silence_seconds",
+    "always_listen_preroll_seconds",
+    "voice_trigger_min_rms",
+    "voice_trigger_ratio",
+    "voice_trigger_consecutive_blocks",
+    "always_listen_enabled",
+)
 AUDIO_PRESET_VALUES = {
     "manual": {},
     "quiet": {"input_gain": 1.35, "noise_gate_threshold": 0.003, "voice_trigger_min_rms": 0.014, "voice_trigger_ratio": 2.0},
@@ -123,6 +134,8 @@ class Settings:
     llm_model: str = DEFAULT_LLM_MODEL
     llm_base_url: str = "http://127.0.0.1:11434"
     llm_timeout_seconds: float = 8.0
+    selected_audio_profile: str = ""
+    audio_profiles: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 def normalize_language_value(value: str | None) -> str:
@@ -202,6 +215,51 @@ def audio_preset_label(value: str | None) -> str:
     return AUDIO_PRESET_UI_LABELS.get(normalized, AUDIO_PRESET_UI_LABELS[DEFAULT_AUDIO_PRESET])
 
 
+def normalize_audio_profile_name(value: str | None) -> str:
+    return " ".join((value or "").strip().split())[:40]
+
+
+def snapshot_audio_profile(settings: Settings) -> dict[str, object]:
+    profile: dict[str, object] = {}
+    for key in AUDIO_PROFILE_SETTING_KEYS:
+        profile[key] = getattr(settings, key)
+    return profile
+
+
+def normalize_audio_profiles(profiles: object) -> dict[str, dict[str, object]]:
+    if not isinstance(profiles, dict):
+        return {}
+    normalized: dict[str, dict[str, object]] = {}
+    for raw_name, raw_values in profiles.items():
+        name = normalize_audio_profile_name(str(raw_name))
+        if not name or not isinstance(raw_values, dict):
+            continue
+        values: dict[str, object] = {}
+        for key in AUDIO_PROFILE_SETTING_KEYS:
+            if key in raw_values:
+                values[key] = raw_values[key]
+        if values:
+            normalized[name] = values
+    return normalized
+
+
+def apply_audio_profile(settings: Settings, profile: dict[str, object]) -> None:
+    for key in AUDIO_PROFILE_SETTING_KEYS:
+        if key not in profile:
+            continue
+        current = getattr(settings, key)
+        value = profile[key]
+        if isinstance(current, bool):
+            setattr(settings, key, bool(value))
+        elif isinstance(current, int):
+            setattr(settings, key, int(value))
+        elif isinstance(current, float):
+            setattr(settings, key, float(value))
+        else:
+            setattr(settings, key, str(value))
+    settings.audio_preset = DEFAULT_AUDIO_PRESET
+
+
 def resolve_llm_model(settings: Settings) -> str:
     profile = normalize_llm_profile_value(settings.llm_profile)
     if profile in LLM_PROFILE_MODELS:
@@ -224,6 +282,8 @@ def load_settings() -> Settings:
     settings.noise_gate_threshold = max(float(settings.noise_gate_threshold), 0.0)
     settings.language = normalize_language_value(settings.language)
     settings.llm_profile = normalize_llm_profile_value(settings.llm_profile)
+    settings.selected_audio_profile = normalize_audio_profile_name(settings.selected_audio_profile)
+    settings.audio_profiles = normalize_audio_profiles(settings.audio_profiles)
     return settings
 
 
