@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass, field
 
 import numpy as np
 import sounddevice as sd
@@ -79,6 +80,66 @@ def apply_noise_gate(audio: np.ndarray, threshold: float) -> np.ndarray:
     gated = audio.copy()
     gated[np.abs(gated) < threshold] = 0.0
     return gated
+
+
+@dataclass
+class AlwaysListenTuningStats:
+    observed_blocks: int = 0
+    near_threshold_waits: int = 0
+    weak_voice_starts: int = 0
+    split_events: int = 0
+    finalize_events: int = 0
+    short_segments: int = 0
+    last_reason: str = ""
+
+
+@dataclass
+class AlwaysListenTuningSuggestion:
+    summary: str
+    changes: dict[str, float] = field(default_factory=dict)
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.changes)
+
+    def describe_changes(self) -> str:
+        if not self.changes:
+            return "변경 없음"
+        return ", ".join(f"{key}={value:.2f}" for key, value in self.changes.items())
+
+
+def recommend_always_listen_tuning(settings: Settings, stats: AlwaysListenTuningStats) -> AlwaysListenTuningSuggestion:
+    if stats.observed_blocks < 24:
+        remaining = max(24 - stats.observed_blocks, 0)
+        return AlwaysListenTuningSuggestion(
+            summary=f"추천 대기 중: always-listen 표본 {stats.observed_blocks}개 수집 ({remaining}개 더 필요)",
+            reasons=["최근 always-listen 표본이 더 쌓이면 추천을 계산합니다."],
+        )
+    changes: dict[str, float] = {}
+    reasons: list[str] = []
+    if stats.near_threshold_waits >= 6 or stats.weak_voice_starts >= 3:
+        next_gain = round(min(max(settings.input_gain, 1.0) + 0.15, 3.0), 2)
+        next_preroll = round(min(max(settings.always_listen_preroll_seconds, 0.45) + 0.05, 0.9), 2)
+        if next_gain != round(settings.input_gain, 2):
+            changes["input_gain"] = next_gain
+        if next_preroll != round(settings.always_listen_preroll_seconds, 2):
+            changes["always_listen_preroll_seconds"] = next_preroll
+        reasons.append("시작 음절이 약하거나 감지 직전까지 임계값에 자주 걸려서 입력 gain / preroll 상향을 추천합니다.")
+    if stats.short_segments >= 2 or stats.split_events >= 2:
+        next_silence = round(min(max(settings.auto_stop_silence_seconds, 0.65) + 0.15, 1.4), 2)
+        if next_silence != round(settings.auto_stop_silence_seconds, 2):
+            changes["auto_stop_silence_seconds"] = next_silence
+        reasons.append("짧은 구간 분할이 반복돼서 문장 종료 침묵 기준 완화를 추천합니다.")
+    if not changes:
+        return AlwaysListenTuningSuggestion(
+            summary="현재 always-listen 감도는 크게 건드릴 필요가 없어 보여요.",
+            reasons=["최근 표본 기준으로 시작/끝음 문제나 과분할 징후가 두드러지지 않았습니다."],
+        )
+    summary = "추천 준비됨: " + ", ".join(
+        f"{key} -> {value:.2f}" for key, value in changes.items()
+    )
+    return AlwaysListenTuningSuggestion(summary=summary, changes=changes, reasons=reasons)
 
 
 class Recorder:
@@ -188,6 +249,7 @@ class AlwaysListen:
         self.last_threshold = 0.0
         self.last_voice_detected = False
         self.last_updated = 0.0
+        self.tuning_stats = AlwaysListenTuningStats()
 
     def start(self):
         if self.on:
@@ -235,6 +297,23 @@ class AlwaysListen:
     def meter_snapshot(self) -> tuple[float, float, float, bool, float]:
         with self.lock:
             return self.last_rms, self.last_peak, self.last_threshold, self.last_voice_detected, self.last_updated
+
+    def tuning_snapshot(self) -> AlwaysListenTuningSuggestion:
+        with self.lock:
+            stats = AlwaysListenTuningStats(
+                observed_blocks=self.tuning_stats.observed_blocks,
+                near_threshold_waits=self.tuning_stats.near_threshold_waits,
+                weak_voice_starts=self.tuning_stats.weak_voice_starts,
+                split_events=self.tuning_stats.split_events,
+                finalize_events=self.tuning_stats.finalize_events,
+                short_segments=self.tuning_stats.short_segments,
+                last_reason=self.tuning_stats.last_reason,
+            )
+        return recommend_always_listen_tuning(self.s, stats)
+
+    def reset_tuning_stats(self):
+        with self.lock:
+            self.tuning_stats = AlwaysListenTuningStats()
 
     def _push_pre(self, mono):
         self.pre.append(mono)
@@ -306,13 +385,18 @@ class AlwaysListen:
             self.last_threshold = threshold
             self.last_voice_detected = voice
             self.last_updated = now
+            self.tuning_stats.observed_blocks += 1
             if not self.chunks:
                 self._push_pre(mono)
                 if voice:
                     self.voice_hits += 1
+                    if rms <= threshold * 1.12:
+                        self.tuning_stats.weak_voice_starts += 1
                 else:
                     self.voice_hits = 0
                     self.noise_floor = (self.noise_floor * 0.96) + (rms * 0.04)
+                    if rms >= threshold * 0.82:
+                        self.tuning_stats.near_threshold_waits += 1
                 if self.voice_hits >= max(int(self.s.voice_trigger_consecutive_blocks), 1):
                     self.chunks = list(self.pre)
                     self.n = sum(len(chunk) for chunk in self.chunks)
@@ -331,6 +415,9 @@ class AlwaysListen:
                     if self.trailing_silence and gap_duration >= split_silence and active_duration >= min_split_duration:
                         carry_chunks = list(self.trailing_silence)
                         carry_n = self.trailing_silence_n
+                        self.tuning_stats.split_events += 1
+                        if active_duration < 0.9:
+                            self.tuning_stats.short_segments += 1
                         self.log(
                             f"Always-listen split after {gap_duration:.2f}s silence "
                             f"(active={active_duration:.2f}s)"
@@ -359,6 +446,9 @@ class AlwaysListen:
                     and active_duration >= min_split_duration
                     and gap_duration >= split_silence
                 ):
+                    self.tuning_stats.finalize_events += 1
+                    if active_duration < 0.9:
+                        self.tuning_stats.short_segments += 1
                     self.log(
                         f"Always-listen finalized after {gap_duration:.2f}s silence "
                         f"(active={active_duration:.2f}s)"
