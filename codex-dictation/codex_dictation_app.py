@@ -11,7 +11,7 @@ from codex_dictation_app_runtime import AppRuntimeMixin
 from codex_dictation_app_ui import AppUIMixin
 from codex_dictation_output_state import OutputState
 from codex_dictation_postedit import AICorrectionPrefetchState, OllamaPostEditor
-from codex_dictation_settings import APP_NAME, audio_preset_label, language_label, llm_profile_label, load_settings, save_settings
+from codex_dictation_settings import APP_TITLE, audio_preset_label, language_label, llm_profile_label, load_settings, save_settings
 from codex_dictation_targeting import WinInfo
 from codex_dictation_transcription import WhisperBackend
 
@@ -19,7 +19,7 @@ from codex_dictation_transcription import WhisperBackend
 class App(AppRuntimeMixin, AppActionsMixin, AppUIMixin):
     def __init__(self, root: tk.Tk, launch_target: WinInfo | None = None, show_window: bool = False):
         self.root = root
-        self.root.title(APP_NAME)
+        self.root.title(APP_TITLE)
         self.root.geometry("980x780")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.launch_target = launch_target
