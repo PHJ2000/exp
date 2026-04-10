@@ -329,6 +329,9 @@ class AlwaysListen:
         # 받침-like endings are less likely to be cut off with the silence.
         return 0.18
 
+    def _tail_post_silence_seconds(self) -> float:
+        return 0.04
+
     def _finalize(self, drop_trailing: int = 0):
         if not self.chunks:
             return
@@ -347,7 +350,16 @@ class AlwaysListen:
             if keep_tail_samples > 0 and trailing_chunks:
                 trailing_audio = np.concatenate(trailing_chunks).astype(np.float32)
                 if trailing_audio.size:
-                    tail = trailing_audio[-keep_tail_samples:]
+                    activity_threshold = max(float(self.s.trim_threshold), float(self.s.noise_gate_threshold), 0.003)
+                    active_indices = np.flatnonzero(np.abs(trailing_audio) >= activity_threshold)
+                    if active_indices.size:
+                        last_active = int(active_indices[-1]) + 1
+                        keep_after = int(self.s.sample_rate * self._tail_post_silence_seconds())
+                        start = max(last_active - keep_tail_samples, 0)
+                        end = min(last_active + keep_after, trailing_audio.size)
+                        tail = trailing_audio[start:end]
+                    else:
+                        tail = trailing_audio[-keep_tail_samples:]
                     if tail.size:
                         segments.append(tail)
         audio = np.concatenate(segments).astype(np.float32)
