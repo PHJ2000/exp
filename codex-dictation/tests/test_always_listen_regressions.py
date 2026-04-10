@@ -75,6 +75,9 @@ class _RuntimeHarness(AppRuntimeMixin):
         self.emitted.append(text)
         return True
 
+    def refresh_history_browser(self):
+        pass
+
 
 class _NullText:
     def insert(self, *_args, **_kwargs):
