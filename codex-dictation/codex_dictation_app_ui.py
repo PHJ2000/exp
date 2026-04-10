@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from codex_dictation_settings import APP_NAME, AUDIO_PRESET_UI_LABELS, audio_preset_label
+from codex_dictation_settings import APP_NAME, APP_VERSION, AUDIO_PRESET_UI_LABELS, audio_preset_label
 
 
 class AppUIMixin:
@@ -14,14 +14,15 @@ class AppUIMixin:
         head.grid(row=0, column=0, sticky="ew")
         head.columnconfigure(1, weight=1)
         ttk.Label(head, text=APP_NAME, font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(head, text=f"v{APP_VERSION}", font=("Segoe UI", 10)).grid(row=1, column=0, sticky="w", pady=(2, 0))
         ttk.Label(head, textvariable=self.status, font=("Segoe UI", 10, "bold")).grid(row=0, column=1, sticky="e")
-        ttk.Label(head, textvariable=self.target).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(head, textvariable=self.target).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Label(
             head,
             text="F7 항상 듣기, F8 수동 녹음, F9 마지막 문장, F10 출력 모드, F11 Enter 전환 | 음성 명령: 보내, 지워, 다 지워, 전체 비워, 다시 ..., 복사, 붙여넣기, 잘라, 취소, 되돌려, 자동/한국어/영어, 최대화/최소화/복원, 이스케이프/나가기, 일시정지/재생, 앞으로/뒤로 감기",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(head, textvariable=self.audio_status, font=("Consolas", 9)).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Label(head, textvariable=self.llm_status, font=("Consolas", 9)).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(head, textvariable=self.audio_status, font=("Consolas", 9)).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(head, textvariable=self.llm_status, font=("Consolas", 9)).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
         top = ttk.Frame(self.root, padding=(12, 0, 12, 0))
         top.grid(row=1, column=0, sticky="nsew")
         top.columnconfigure((0, 1), weight=1)

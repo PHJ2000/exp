@@ -5,6 +5,7 @@ import sys
 from codex_dictation_audio import get_input_devices
 from codex_dictation_settings import (
     APP_NAME,
+    APP_VERSION,
     DATA_ROOT,
     HISTORY_PATH,
     LEGACY_HISTORY_PATH,
@@ -38,6 +39,7 @@ def doctor(settings: Settings | None = None) -> str:
     lines = [
         f"{APP_NAME} doctor",
         "-" * 40,
+        f"Version: {APP_VERSION}",
         f"Python: {sys.version.split()[0]}",
         f"Data root: {display_path(DATA_ROOT, base=DATA_ROOT.parent)}",
         f"Settings: {display_path(SETTINGS_PATH)}",
