@@ -66,7 +66,7 @@ class AppUIMixin:
         ttk.Button(profile_btn, text="Apply Profile", command=self.apply_selected_audio_profile).grid(row=0, column=0, sticky="ew")
         ttk.Button(profile_btn, text="Save Current", command=self.save_audio_profile).grid(row=0, column=1, sticky="ew", padx=6)
         ttk.Button(profile_btn, text="Delete Profile", command=self.delete_selected_audio_profile).grid(row=0, column=2, sticky="ew")
-        self._combo(right, "Output Mode", "output_mode", ["paste", "clipboard", "type"], 0)
+        self._combo(right, "Output Mode", "output_mode", ["auto", "paste", "clipboard", "type"], 0)
         self._entry(right, "Paste Hotkey", "paste_hotkey", 1)
         self._check(right, "Press Enter after output", "auto_enter", 2)
         self._check(right, "Always listen when target input window is focused", "always_listen_enabled", 3)

@@ -9,10 +9,12 @@ from codex_dictation_targeting import (
     SYSTEM_INPUT_PROCS,
     WINDOWS_SEARCH_PROCS,
     WinInfo,
+    classify_output_target,
     fg_info,
     get_clipboard_text,
     has_precise_text_focus,
     is_terminal,
+    recommended_output_mode_for_target,
     set_clipboard_text,
     target_context_key,
 )
@@ -90,6 +92,14 @@ class AppOutputMixin:
 
     def _paste_hotkey(self) -> str:
         return self.s.paste_hotkey or "ctrl+v"
+
+    def _resolve_output_mode(self, info: WinInfo | None, *, force_paste: bool = False) -> tuple[str, str]:
+        if force_paste:
+            return ("paste", "forced")
+        if self.s.output_mode == "auto":
+            category = classify_output_target(info)
+            return (recommended_output_mode_for_target(info), category)
+        return (self.s.output_mode, "manual")
 
     def _should_safe_paste(self, info: WinInfo | None) -> bool:
         return bool(info and (info.proc in BROWSER_FALLBACK_PROCS or info.proc in WINDOWS_SEARCH_PROCS or info.proc in SYSTEM_INPUT_PROCS))
@@ -199,10 +209,14 @@ class AppOutputMixin:
         except Exception as exc:
             self.log(f"Output hotkeys unavailable: {exc}")
             return False
-        use_typed_output = self.s.output_mode == "type" and not self._should_safe_paste(info)
+        resolved_mode, resolved_reason = self._resolve_output_mode(info)
+        use_typed_output = resolved_mode == "type" and not self._should_safe_paste(info)
         original_clipboard = get_clipboard_text() if not use_typed_output else ""
         trace_prefix = f"{trace_id} | " if trace_id else ""
-        self.log(f"{trace_prefix}교체 준비: target=pending, mode={'type' if use_typed_output else 'paste'}, old_len={len(old_pending)}, new_len={len(payload)}")
+        self.log(
+            f"{trace_prefix}교체 준비: target=pending, mode={'type' if use_typed_output else 'paste'}, "
+            f"requested={self.s.output_mode}, reason={resolved_reason}, old_len={len(old_pending)}, new_len={len(payload)}"
+        )
         if not use_typed_output and not set_clipboard_text(payload):
             self.log("Voice command failed: failed to prepare correction clipboard")
             return False
@@ -371,10 +385,11 @@ class AppOutputMixin:
         current_context = self._current_target_context(info)
         allow_space = append_space and has_precise_text_focus(info)
         payload = f"{text} " if text and allow_space and not sent_enter else text
-        if self.s.output_mode == "clipboard":
+        resolved_mode, resolved_reason = self._resolve_output_mode(info, force_paste=force_paste)
+        if resolved_mode == "clipboard":
             self.log("Copied transcript to clipboard")
             return True
-        if self.s.output_mode == "type" and not force_paste and not self._should_safe_paste(info):
+        if resolved_mode == "type" and not self._should_safe_paste(info):
             try:
                 keyboard.write(payload, delay=0)
             except Exception as exc:
@@ -404,7 +419,10 @@ class AppOutputMixin:
         state.output_grace_until = max(state.output_grace_until, time.monotonic() + 0.75)
         if remember:
             self._remember_output_payload(payload, sent_enter=sent_enter, target_context=current_context)
-        self.log(f"Transcript sent via {self.s.output_mode}")
+        if self.s.output_mode == "auto":
+            self.log(f"Transcript sent via auto->{resolved_mode} ({resolved_reason})")
+        else:
+            self.log(f"Transcript sent via {resolved_mode}")
         return True
 
     def send_enter(self) -> bool:

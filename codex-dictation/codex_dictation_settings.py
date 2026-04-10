@@ -215,6 +215,25 @@ def audio_preset_label(value: str | None) -> str:
     return AUDIO_PRESET_UI_LABELS.get(normalized, AUDIO_PRESET_UI_LABELS[DEFAULT_AUDIO_PRESET])
 
 
+def normalize_output_mode_value(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    aliases = {
+        "": "auto",
+        "auto": "auto",
+        "자동": "auto",
+        "automatic": "auto",
+        "paste": "paste",
+        "붙여넣기": "paste",
+        "clipboard": "clipboard",
+        "클립보드": "clipboard",
+        "type": "type",
+        "typing": "type",
+        "직접입력": "type",
+        "직접 입력": "type",
+    }
+    return aliases.get(raw, "auto")
+
+
 def normalize_audio_profile_name(value: str | None) -> str:
     return " ".join((value or "").strip().split())[:40]
 
@@ -282,6 +301,7 @@ def load_settings() -> Settings:
     settings.noise_gate_threshold = max(float(settings.noise_gate_threshold), 0.0)
     settings.language = normalize_language_value(settings.language)
     settings.llm_profile = normalize_llm_profile_value(settings.llm_profile)
+    settings.output_mode = normalize_output_mode_value(settings.output_mode)
     settings.selected_audio_profile = normalize_audio_profile_name(settings.selected_audio_profile)
     settings.audio_profiles = normalize_audio_profiles(settings.audio_profiles)
     return settings

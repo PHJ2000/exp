@@ -25,6 +25,7 @@ from codex_dictation_settings import (  # noqa: E402
     normalize_audio_preset_value,
     normalize_language_value,
     normalize_llm_profile_value,
+    normalize_output_mode_value,
     resolve_llm_model,
     snapshot_audio_profile,
 )
@@ -62,6 +63,12 @@ class SettingsNormalizationTests(unittest.TestCase):
         self.assertEqual(normalize_audio_preset_value("조용한 방"), "quiet")
         self.assertEqual(normalize_audio_preset_value("unknown"), DEFAULT_AUDIO_PRESET)
         self.assertEqual(audio_preset_label("noisy"), "시끄러운 방")
+
+    def test_output_mode_normalization(self):
+        self.assertEqual(normalize_output_mode_value("자동"), "auto")
+        self.assertEqual(normalize_output_mode_value("clipboard"), "clipboard")
+        self.assertEqual(normalize_output_mode_value("직접 입력"), "type")
+        self.assertEqual(normalize_output_mode_value("???"), "auto")
 
     def test_audio_profile_name_and_profile_normalization(self):
         self.assertEqual(normalize_audio_profile_name("  회의 용  "), "회의 용")

@@ -18,6 +18,7 @@ BROWSER_WINDOW_CLASSES = {"Chrome_WidgetWin_1", "MozillaWindowClass"}
 WINDOWS_SEARCH_PROCS = {"searchhost.exe", "startmenuexperiencehost.exe", "searchapp.exe"}
 SYSTEM_INPUT_PROCS = {"systemsettings.exe", "applicationframehost.exe", "explorer.exe"}
 SYSTEM_INPUT_CLASSES = {"ApplicationFrameWindow", "Windows.UI.Core.CoreWindow", "CabinetWClass", "#32770", "XamlExplorerHostIslandWindow"}
+MESSENGER_PROCS = {"kakaotalk.exe", "discord.exe", "slack.exe", "telegram.exe"}
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\CodexDictationSingleton"
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
@@ -285,6 +286,55 @@ def has_precise_text_focus(info: WinInfo | None) -> bool:
     if focus.caret_hwnd or focus.caret_visible:
         return True
     return focus.focus_cls in INPUT_FOCUS_CLASSES or focus.caret_cls in INPUT_FOCUS_CLASSES
+
+
+def classify_output_target(
+    info: WinInfo | None,
+    *,
+    precise_focus: bool | None = None,
+    terminal: bool | None = None,
+    general_input: bool | None = None,
+) -> str:
+    if not info:
+        return "unknown"
+    proc = (info.proc or "").lower()
+    if terminal is None:
+        terminal = is_terminal(info)
+    if terminal:
+        return "terminal"
+    if proc in WINDOWS_SEARCH_PROCS or proc in SYSTEM_INPUT_PROCS:
+        return "system"
+    if proc in MESSENGER_PROCS:
+        return "messenger"
+    if proc in WEB_INPUT_PROCS or proc in BROWSER_FALLBACK_PROCS:
+        return "browser"
+    if precise_focus is None:
+        precise_focus = has_precise_text_focus(info)
+    if precise_focus:
+        return "text"
+    if general_input is None:
+        general_input = is_general_input_target(info)
+    if general_input:
+        return "general"
+    return "unknown"
+
+
+def recommended_output_mode_for_target(
+    info: WinInfo | None,
+    *,
+    precise_focus: bool | None = None,
+    terminal: bool | None = None,
+    general_input: bool | None = None,
+) -> str:
+    category = classify_output_target(
+        info,
+        precise_focus=precise_focus,
+        terminal=terminal,
+        general_input=general_input,
+    )
+    if category in {"terminal", "text", "general", "unknown"}:
+        return "type"
+    return "paste"
 
 
 def target_context_key(info: WinInfo | None):
