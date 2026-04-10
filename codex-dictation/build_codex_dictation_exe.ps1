@@ -1,3 +1,7 @@
+param(
+    [string]$PythonPath = ""
+)
+
 $ErrorActionPreference = "Stop"
 
 function Find-PythonInAncestorVenv {
@@ -23,11 +27,55 @@ function Find-PythonInAncestorVenv {
     return $null
 }
 
+function Find-PythonInGitCommonDirVenv {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StartDirectory
+    )
+
+    $gitCommonDir = $null
+    try {
+        $gitCommonDir = (& git -C $StartDirectory rev-parse --path-format=absolute --git-common-dir 2>$null | Select-Object -First 1).Trim()
+    } catch {
+        return $null
+    }
+
+    if (-not $gitCommonDir) {
+        return $null
+    }
+
+    $gitCommonDirPath = $gitCommonDir
+    if (-not (Test-Path $gitCommonDirPath)) {
+        return $null
+    }
+
+    $repoRoot = Split-Path $gitCommonDirPath -Parent
+    if (-not $repoRoot) {
+        return $null
+    }
+
+    $candidate = Join-Path $repoRoot ".venv\Scripts\python.exe"
+    if (Test-Path $candidate) {
+        return $candidate
+    }
+
+    return $null
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$python = Find-PythonInAncestorVenv -StartDirectory $scriptDir
+$python = $PythonPath
+
+if ($python) {
+    $python = (Resolve-Path $python).Path
+} else {
+    $python = Find-PythonInAncestorVenv -StartDirectory $scriptDir
+    if (-not $python) {
+        $python = Find-PythonInGitCommonDirVenv -StartDirectory $scriptDir
+    }
+}
 
 if (-not $python) {
-    throw ".venv\Scripts\python.exe 를 찾지 못했습니다. 저장소 루트에서 가상환경을 먼저 준비해주세요."
+    throw ".venv\\Scripts\\python.exe 를 찾지 못했습니다. 저장소 루트 또는 연결된 worktree의 원본 저장소에서 가상환경을 먼저 준비하거나 -PythonPath로 직접 지정해주세요."
 }
 
 $buildRequirements = Join-Path $scriptDir "requirements-dictation-build.txt"

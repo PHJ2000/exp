@@ -61,6 +61,44 @@ codex-dictation\dist\CodexDictation.exe
 - 첫 실행 시 `faster-whisper` 모델이 PC에 없다면 모델 다운로드는 여전히 한 번 필요합니다.
 - 전역 핫키는 기존처럼 `tools\AutoHotkey` 또는 `run_codex_hotkeys.bat` 흐름을 같이 쓰는 것이 가장 편합니다.
 
+## 릴리즈 패키지 만들기
+
+외부 배포용으로는 `exe`만 따로 주기보다, 핫키 런처와 `AutoHotkey` 엔진까지 함께 묶은 패키지를 만드는 편이 좋습니다.
+이 스크립트는 `worktree`에서 실행하더라도 연결된 원본 저장소의 `.venv`를 찾아 빌드를 시도합니다. 필요하면 `-PythonPath`로 사용할 Python을 직접 지정할 수 있습니다.
+
+```powershell
+codex-dictation\package_codex_dictation_release.ps1
+```
+
+완료되면 아래 구조가 생성됩니다.
+
+```text
+codex-dictation\release\CodexDictation-win64\
+  codex-dictation\
+    dist\CodexDictation.exe
+    README.md
+    launch_codex_dictation.ahk
+    run_codex_dictation.bat
+    run_codex_hotkeys.bat
+  tools\AutoHotkey\
+```
+
+같은 위치에 `CodexDictation-win64.zip`도 함께 만들어지므로 GitHub Releases 자산으로 올리기 좋습니다.
+
+배포 패키지 기준 권장 실행 순서:
+1. `CodexDictation-win64.zip`을 원하는 폴더에 압축 해제
+2. `codex-dictation\run_codex_hotkeys.bat` 실행
+3. 이후 `F1`로 앱 실행 또는 최소화
+4. 설정 확인이 필요하면 `F2`
+
+핫키 없이 앱만 먼저 확인하고 싶다면:
+1. `codex-dictation\run_codex_dictation.bat`로 앱 본체만 직접 실행
+
+메모:
+- 배포 패키지는 `exe`, 배치 런처, `AutoHotkey` 엔진만 포함하므로 Python 설치가 없어도 실행할 수 있습니다.
+- 첫 실행 시 `faster-whisper` 모델 다운로드는 여전히 한 번 필요할 수 있습니다.
+- GitHub Releases에는 `CodexDictation-win64.zip` 하나만 올려도 사용자가 필요한 파일을 한 번에 받을 수 있습니다.
+
 ## 실행
 
 ```powershell
