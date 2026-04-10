@@ -46,6 +46,14 @@ def _known_usernames(home: Path | None = None) -> set[str]:
     return {value.casefold() for value in candidates if value}
 
 
+def _mask_known_usernames(text: str, *, home: Path | None = None) -> str:
+    masked = text
+    for username in sorted(_known_usernames(home), key=len, reverse=True):
+        pattern = re.compile(rf"(?<![\w.-]){re.escape(username)}(?![\w.-])", re.IGNORECASE)
+        masked = pattern.sub("<user-name>", masked)
+    return masked
+
+
 def _sanitize_path(path_text: str, *, project_root: Path | None = None, home: Path | None = None) -> str:
     candidate = Path(path_text)
     root = (project_root or PROJECT_ROOT).resolve()
@@ -93,7 +101,8 @@ def mask_share_safe_text(text: str, *, project_root: Path | None = None) -> str:
     masked = LOCAL_HOST_URL_PATTERN.sub(replace_url, text)
     masked = LOCAL_HOST_PATTERN.sub(replace_host, masked)
     masked = WINDOWS_PATH_PATTERN.sub(replace_path, masked)
-    return USER_ASSIGNMENT_PATTERN.sub(replace_user_assignment, masked)
+    masked = USER_ASSIGNMENT_PATTERN.sub(replace_user_assignment, masked)
+    return _mask_known_usernames(masked)
 
 
 def sanitize_for_sharing(

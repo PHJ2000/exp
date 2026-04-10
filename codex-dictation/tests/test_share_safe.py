@@ -29,6 +29,12 @@ class ShareSafeTextTests(unittest.TestCase):
         self.assertIn('username:"<user-name>"', masked)
         self.assertIn("owner=someone-else", masked)
 
+    def test_masks_standalone_known_username(self):
+        text = "owner ParkJaeHong shared the log from localhost"
+        masked = mask_share_safe_text(text)
+        self.assertIn("owner <user-name> shared the log from <local-host>", masked)
+        self.assertNotIn("ParkJaeHong", masked)
+
     def test_prefers_project_relative_path(self):
         sample = PROJECT_DIR / "README.md"
         masked = mask_share_safe_text(str(sample), project_root=PROJECT_DIR.parent)
