@@ -7,7 +7,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from meeting_summary_tool.models import AudioInput
+from meeting_summary_tool.pipeline import PipelineExecutionError
 from meeting_summary_tool.pipeline import prepare_pipeline_run
+from meeting_summary_tool.pipeline import run_pipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +43,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         help="결과 저장 디렉토리",
+    )
+    parser.add_argument(
+        "--summary-provider",
+        default="mock",
+        choices=["mock", "ollama", "openai"],
+        help="요약 백엔드 선택",
+    )
+    parser.add_argument(
+        "--summary-model",
+        help="요약 모델 이름",
     )
     return parser
 
@@ -94,6 +106,21 @@ def _render_run_summary(audio_input: AudioInput) -> list[str]:
     return lines
 
 
+def _render_result_summary(markdown_paths: list[Path], warnings: list[str]) -> list[str]:
+    """Build a user-facing result summary."""
+
+    lines = ["meeting-summary-tool 파이프라인 실행이 완료되었습니다."]
+    if markdown_paths:
+        lines.append("- 생성 파일:")
+        for path in markdown_paths:
+            lines.append(f"  - {path}")
+    if warnings:
+        lines.append("- 경고:")
+        for warning in warnings:
+            lines.append(f"  - {warning}")
+    return lines
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI entrypoint."""
 
@@ -110,11 +137,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     for line in _render_run_summary(prepared_run.audio_input):
         print(line)
     print(f"- 정규화된 출력 디렉토리: {prepared_run.output_dir}")
-    if prepared_run.warnings:
-        print("- 경고:")
-        for warning in prepared_run.warnings:
-            print(f"  - {warning}")
-    print("다음 단계로 STT / 요약 파이프라인을 연결하면 됩니다.")
+
+    try:
+        result = run_pipeline(
+            prepared_run,
+            model_provider=args.summary_provider,
+            model_name=args.summary_model,
+        )
+    except PipelineExecutionError as exc:
+        parser.exit(status=1, message=f"파이프라인 실행 실패: {exc}\n")
+
+    markdown_paths = [artifact.path for artifact in result.artifacts if artifact.kind == "markdown"]
+    for line in _render_result_summary(markdown_paths, result.warnings):
+        print(line)
     return 0
 
 
