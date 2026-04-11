@@ -13,6 +13,14 @@ Codex CLI에 붙여 쓰는 Windows용 로컬 받아쓰기 프로젝트입니다.
 - 실행 파일과 문서는 모두 `codex-dictation/` 아래에 정리되어 있습니다.
 - 상세 문서: [`codex-dictation/README.md`](./codex-dictation/README.md)
 
+### `meeting-summary-tool/`
+
+로컬 우선 회의 요약 도구 기획과 초기 MVP 준비를 위한 디렉토리입니다.
+
+- 오디오 파일 업로드 후 로컬 STT, 선택적 화자 분리, 요약, 결정사항, 액션 아이템 생성까지를 목표로 합니다.
+- 현재는 제품 방향, MVP 범위, 기술 선택, 다음 작업 항목을 문서로 정리한 단계입니다.
+- 상세 문서: [`meeting-summary-tool/README.md`](./meeting-summary-tool/README.md)
+
 ### `experiments/`
 
 개별 성능 검증, 벤치마크, 재현 스크립트를 모아둔 실험 디렉토리입니다.
@@ -56,6 +64,7 @@ Codex CLI에 붙여 쓰는 Windows용 로컬 받아쓰기 프로젝트입니다.
 ## 어디부터 보면 되나
 
 - 실제 받아쓰기 본체 파일은 `codex-dictation/` 아래에 있습니다.
+- 회의 요약 도구 기획은 `meeting-summary-tool/`부터 보면 됩니다.
 - 실험 결과나 재현 스크립트는 `experiments/`에서 보면 됩니다.
 - 외부 프로젝트나 서드파티 소스는 `external/`에 따로 보관합니다.
 
@@ -70,7 +79,8 @@ Codex CLI에 붙여 쓰는 Windows용 로컬 받아쓰기 프로젝트입니다.
 
 ## 다음 머지 기준
 
-나중에 `main` 쪽으로 가져갈 때는 기본적으로 아래 두 단위를 기준으로 보면 됩니다.
+나중에 `main` 쪽으로 가져갈 때는 기본적으로 아래 세 단위를 기준으로 보면 됩니다.
 
 - `codex-dictation/`: 실제 제품화에 가까운 받아쓰기 프로젝트
+- `meeting-summary-tool/`: 회의 요약 도구 기획과 초기 MVP 준비
 - `experiments/`: 검증용 스크립트와 결과물
