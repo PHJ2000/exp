@@ -1,0 +1,11 @@
+.venv/
+external/
+inputs/
+models/
+outputs/
+temp/
+voicepad/
+**/node_modules/
+**/dist/
+**/build/
+**/.next/
