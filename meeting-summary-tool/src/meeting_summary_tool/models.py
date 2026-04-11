@@ -42,6 +42,7 @@ class TranscriptDocument:
     source_file: Path
     segments: list[TranscriptSegment] = field(default_factory=list)
     full_text: str = ""
+    speaker_map: dict[str, str] = field(default_factory=dict)
     language: str = "ko"
     duration_sec: float | None = None
     model_name: str | None = None
@@ -53,12 +54,27 @@ class TranscriptDocument:
 
         return bool(self.full_text.strip() or self.segments)
 
+    def iter_lines(self) -> list[str]:
+        """Render transcript content into line-oriented text."""
+
+        if self.segments:
+            return [segment.as_text_line() for segment in self.segments if segment.text.strip()]
+        if self.full_text:
+            return [line.strip() for line in self.full_text.splitlines() if line.strip()]
+        return []
+
+    def render_text(self) -> str:
+        """Render transcript content as a single text block."""
+
+        return "\n".join(self.iter_lines())
+
 
 @dataclass(slots=True)
 class DecisionItem:
     """A decision extracted from a meeting."""
 
     text: str
+    confidence: float | None = None
 
 
 @dataclass(slots=True)
@@ -66,6 +82,7 @@ class ActionItem:
     """An action item extracted from a meeting."""
 
     text: str
+    confidence: float | None = None
     owner: str | None = None
     due_date: str | None = None
 
