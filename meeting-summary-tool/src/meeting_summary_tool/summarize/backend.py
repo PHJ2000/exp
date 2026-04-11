@@ -20,13 +20,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Protocol, Sequence
 
+from meeting_summary_tool.models import ActionItem
+from meeting_summary_tool.models import DecisionItem
+from meeting_summary_tool.models import TranscriptDocument
+from meeting_summary_tool.models import TranscriptSegment
+
 __all__ = [
     "ActionItem",
     "DecisionItem",
     "PromptMessage",
     "SummaryBackend",
     "SummaryBackendConfig",
-    "SummaryItem",
     "SummaryPayload",
     "SummaryProvider",
     "SummaryRequest",
@@ -38,41 +42,6 @@ __all__ = [
     "OpenAISummaryProvider",
     "build_default_backend",
 ]
-
-
-@dataclass(slots=True)
-class TranscriptSegment:
-    """A single normalized transcript segment."""
-
-    speaker: str
-    text: str
-    start_sec: float | None = None
-    end_sec: float | None = None
-
-    def as_text(self) -> str:
-        prefix = f"{self.speaker}: " if self.speaker else ""
-        return f"{prefix}{self.text}".strip()
-
-
-@dataclass(slots=True)
-class TranscriptDocument:
-    """Normalized transcript input consumed by the summary backend."""
-
-    segments: list[TranscriptSegment] = field(default_factory=list)
-    transcript_text: str | None = None
-    speaker_map: dict[str, str] = field(default_factory=dict)
-    language: str = "ko"
-
-    def iter_lines(self) -> list[str]:
-        if self.segments:
-            return [segment.as_text() for segment in self.segments if segment.text.strip()]
-        if self.transcript_text:
-            return [line.strip() for line in self.transcript_text.splitlines() if line.strip()]
-        return []
-
-    def render_text(self) -> str:
-        lines = self.iter_lines()
-        return "\n".join(lines)
 
 
 @dataclass(slots=True)
@@ -89,27 +58,6 @@ class SummaryRequest:
     api_key: str | None = None
     output_dir: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class SummaryItem:
-    """Base structure for structured summary items."""
-
-    text: str
-    confidence: float | None = None
-
-
-@dataclass(slots=True)
-class DecisionItem(SummaryItem):
-    """A meeting decision extracted from the transcript."""
-
-
-@dataclass(slots=True)
-class ActionItem(SummaryItem):
-    """A meeting action item extracted from the transcript."""
-
-    owner: str | None = None
-    due_date: str | None = None
 
 
 @dataclass(slots=True)
